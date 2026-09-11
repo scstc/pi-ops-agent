@@ -39,7 +39,11 @@ if command -v apt-get >/dev/null 2>&1; then
   apt-get update -qq
   apt-get install -y -qq build-essential cmake git curl xz-utils ca-certificates >/dev/null
 elif command -v dnf >/dev/null 2>&1; then
-  dnf install -y -q gcc-c++ make cmake git curl xz tar findutils procps-ng
+  # RHEL8 系(rocky8/麒麟 V10)默认 gcc 8.5:链接 std::filesystem 缺 -lstdc++fs 会挂
+  # (llama.cpp 报 undefined reference to std::filesystem::*)→ 用 gcc-toolset-12
+  dnf install -y -q gcc-toolset-12 make cmake git curl xz tar findutils procps-ng
+  # shellcheck disable=SC1091
+  source /opt/rh/gcc-toolset-12/enable
 else
   die "不认识的包管理器(仅支持 apt/dnf 系)"
 fi
