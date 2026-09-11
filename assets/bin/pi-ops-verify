@@ -22,10 +22,12 @@ PROMPT='你是 pi-ops-agent 的【部署验证模式】。下面给你一份部�
 
 规则(严格遵守):
 1. 只做只读操作:ss -tln / curl(探测一律加 -m 3)/ systemctl status / ps / ls / cat / test -d;禁止任何修改性命令
-2. 逐项验证,一项不落;每项输出一行:| 名称 | 期望 | 实际 | ✅通过/❌不符/⚠️无法验证 | 证据(命令输出关键片段) |
-3. 网络连通性探测必须带超时,不通就标记,不要卡住
-4. 全部验完后输出:汇总(通过 x 项/失败 y 项/无法验证 z 项),并对每个 ❌ 给出一句话修复建议
-5. 用中文,直接输出报告正文'
+2. 省轮次:能合并的检查合并成一条命令(如 `ss -tln | grep -E "8787|8848"` 一次查多端口;`ls -d /a /b` 一次查多目录),不要一项一轮
+3. 服务单元查询:用户级服务必须用 `systemctl --user status <名>`(如 pi-ops-llama 是用户级);端口用 ss 查,比 systemctl 更直接
+4. 逐项输出一行:| 名称 | 期望 | 实际 | ✅通过/❌不符/⚠️无法验证 | 证据(输出关键片段) |
+5. 网络探测必须带 -m 3 超时,不通就标记,不要卡住
+6. 全部验完输出汇总(通过 x / 失败 y / 无法验证 z),每个 ❌ 给一句话修复建议
+7. 用中文,直接输出报告正文'
 
 if [ -n "$SPEC" ]; then
   PROMPT="$PROMPT
@@ -49,7 +51,7 @@ fi
 } > /tmp/pi-ops-verify-prompt.$$
 
 echo "[pi-ops-verify] 文档:$DOC  报告:$OUT"
-if command -v timeout >/dev/null 2>&1; then TO="timeout ${PI_SMOKE_TIMEOUT:-900}"; else TO=""; fi
+if command -v timeout >/dev/null 2>&1; then TO="timeout ${PI_VERIFY_TIMEOUT:-1500}"; else TO=""; fi
 # 注意:pi -p 会等 stdin EOF,非交互必须显式关闭
 $TO "$P" -p "$(cat /tmp/pi-ops-verify-prompt.$$)" < /dev/null | tee "$OUT"
 rm -f /tmp/pi-ops-verify-prompt.$$
