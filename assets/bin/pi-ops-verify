@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# pi-ops-verify —— 部署架构文档驱动的部署验证(只读)
+# 用法: pi-ops-verify <架构文档.md> [输出报告.md]
+#
+# 文档格式(双通道):
+#   1) 文档含 ```deploy-spec YAML 代码块 → 优先按该结构化清单逐项验证(推荐,可靠)
+#   2) 无 spec 块 → 整篇文档交给 agent 理解后自由验证(wiki 随手贴的降级通道)
+# 全程只读(ss/curl/systemctl status/ls/cat/ps);危险命令会被审批门拦截(headless 下默认拒绝)
+set -euo pipefail
+
+DOC="${1:?用法: pi-ops-verify <架构文档.md> [输出报告.md]}"
+OUT="${2:-verify-report-$(date +%Y%m%d-%H%M%S).md}"
+PI_OPS_HOME="${PI_OPS_HOME:-$HOME/pi-ops-agent}"
+[ -f "$DOC" ] || { echo "文档不存在: $DOC" >&2; exit 1; }
+P="$PI_OPS_HOME/bin/pi-ops"
+[ -x "$P" ] || { echo "未找到 $P,请先运行 install.sh" >&2; exit 1; }
+
+# 提取 ```deploy-spec 块(不存在则为空)
+SPEC="$(awk '/^``` *deploy-spec/{f=1;next} f && /^```/{f=0;next} f' "$DOC")"
+
+PROMPT='你是 pi-ops-agent 的【部署验证模式】。下面给你一份部署架构文档,请在当前服务器上逐项核对实际部署状态。
+
+规则(严格遵守):
+1. 只做只读操作:ss -tln / curl(探测一律加 -m 3)/ systemctl status / ps / ls / cat / test -d;禁止任何修改性命令
+2. 逐项验证,一项不落;每项输出一行:| 名称 | 期望 | 实际 | ✅通过/❌不符/⚠️无法验证 | 证据(命令输出关键片段) |
+3. 网络连通性探测必须带超时,不通就标记,不要卡住
+4. 全部验完后输出:汇总(通过 x 项/失败 y 项/无法验证 z 项),并对每个 ❌ 给出一句话修复建议
+5. 用中文,直接输出报告正文'
+
+if [ -n "$SPEC" ]; then
+  PROMPT="$PROMPT
+
+文档中有结构化部署清单(deploy-spec),必须逐条覆盖清单里的每一项:
+---
+$SPEC
+---
+文档全文(补充上下文):
+"
+else
+  PROMPT="$PROMPT
+
+部署架构文档全文:
+"
+fi
+
+{
+  echo "$PROMPT"
+  cat "$DOC"
+} > /tmp/pi-ops-verify-prompt.$$
+
+echo "[pi-ops-verify] 文档:$DOC  报告:$OUT"
+if command -v timeout >/dev/null 2>&1; then TO="timeout ${PI_SMOKE_TIMEOUT:-900}"; else TO=""; fi
+# 注意:pi -p 会等 stdin EOF,非交互必须显式关闭
+$TO "$P" -p "$(cat /tmp/pi-ops-verify-prompt.$$)" < /dev/null | tee "$OUT"
+rm -f /tmp/pi-ops-verify-prompt.$$
+echo ""
+echo "[pi-ops-verify] 完成,报告已存:$OUT"

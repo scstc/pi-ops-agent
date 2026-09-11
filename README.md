@@ -23,12 +23,25 @@ pi-ops                   # 装完即用(交互 TUI);或 pi-ops -p "查一下磁�
 
 `install.sh` 的检测顺序(每步:系统已有且版本满足 → 复用,否则从 bundle/ 离线装):
 
-1. **Node ≥ 22**(pi 的硬要求;npmmirror tarball,解到 `~/pi-ops-agent/node`)
+1. **Node ≥ 22**(pi 的硬要求;npmmirror tarball,解到 `~/pi-ops-agent/node`,**不碰系统 node**——PATH 只在启动器内部生效)
 2. **llama-server**(llama.cpp 官方预编译单二进制)
 3. **GGUF 模型**(默认 qwen3.5-2b,备选 4b;来自 Ollama registry blob——即 `ollama pull` 的底层协议,但**运行时不用 Ollama**)
 4. **pi**(npm 包自包含 bundle,含全部依赖)
 
 装完零手动配置:自动生成 `~/.pi/agent/` 下的 `models.json`(provider 指向 `127.0.0.1:8787` 的 llama-server)、`settings.json` 默认 provider/model(保留已有主题等设置)、`SYSTEM.md` 运维提示词、`extensions/pi-ops-tools.ts`。
+
+## 部署验证:pi-ops-verify(架构文档驱动)
+
+给一份部署架构文档(wiki 导出的 Markdown 即可),一条指令自动逐项核对实际部署状态并出报告:
+
+```bash
+pi-ops-verify 部署架构.md              # 报告存 verify-report-<时间戳>.md
+pi-ops-verify 部署架构.md my-report.md # 指定报告文件
+```
+
+- **文档双通道**:含 ` ```deploy-spec ` YAML 块(服务/端口/进程/目录/文件/版本/连通性,规范见 `examples/deploy-spec-example.md`)→ 严格逐条验证;无 spec 块则 agent 通读全文自由理解(wiki 随手贴可用)
+- **全程只读**(ss/curl/systemctl status/ls/cat),验证天然落在审批门放行区,危险命令照拦
+- 输出:逐项 ✅/❌/⚠️ + 证据 + 汇总 + 失败项修复建议
 
 ## 总体架构
 
