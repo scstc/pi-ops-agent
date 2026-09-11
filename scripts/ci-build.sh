@@ -40,13 +40,18 @@ if command -v apt-get >/dev/null 2>&1; then
   apt-get install -y -qq build-essential cmake git curl xz-utils ca-certificates >/dev/null
 elif command -v dnf >/dev/null 2>&1; then
   # RHEL8 系(rocky8/麒麟 V10)默认 gcc 8.5:链接 std::filesystem 缺 -lstdc++fs 会挂
-  # (llama.cpp 报 undefined reference to std::filesystem::*)→ 用 gcc-toolset-12
-  dnf install -y -q gcc-toolset-12 make cmake git curl xz tar findutils procps-ng
+  # (llama.cpp 报 undefined reference to std::filesystem::*)→ 用 gcc-toolset-12。
+  # 注意:toolset 不带 libstdc++ 运行库,且麒麟系统库只到 GLIBCXX_3.4.24 —— 因此
+  # 编译一律 -static-libstdc++(devel 包提供静态库),彻底不依赖目标机 C++ 运行库
+  dnf install -y -q gcc-toolset-12 gcc-toolset-12-libstdc++-devel \
+    make cmake git curl xz tar findutils procps-ng
   # shellcheck disable=SC1091
   source /opt/rh/gcc-toolset-12/enable
 else
   die "不认识的包管理器(仅支持 apt/dnf 系)"
 fi
+STATIC_CPP=""
+if [ -d /opt/rh/gcc-toolset-12 ]; then STATIC_CPP="-static-libstdc++ -static-libgcc"; fi
 
 # ---------- 2. 源码编译 llama.cpp(钉 tag;产物匹配本容器 glibc) ----------
 if [ ! -x "$W/llama.cpp/build/bin/llama-server" ]; then
@@ -57,18 +62,18 @@ if [ ! -x "$W/llama.cpp/build/bin/llama-server" ]; then
   fi
   cmake -S "$W/llama.cpp" -B "$W/llama.cpp/build" \
     -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_EXE_LINKER_FLAGS="$STATIC_CPP" \
+    -DCMAKE_SHARED_LINKER_FLAGS="$STATIC_CPP" \
     -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_CURL=OFF >/dev/null
   cmake --build "$W/llama.cpp/build" -j"$(nproc)" >/dev/null
 fi
 [ -x "$W/llama.cpp/build/bin/llama-server" ] || die "llama-server 编译失败"
-# RHEL8 系目标机的系统 libstdc++ 可能过老(实测麒麟 V10 只有 GLIBCXX_3.4.24,而
-# gcc-toolset-12 编译产物需要 ≥3.4.25)→ 把 toolset 的新版 C++ 运行库打进包,
-# llama-run 的 LD_LIBRARY_PATH(=二进制目录)会优先加载,不赌目标机环境
-if [ -d /opt/rh/gcc-toolset-12/root/usr/lib64 ]; then
-  cp -a /opt/rh/gcc-toolset-12/root/usr/lib64/libstdc++.so.6* \
-        /opt/rh/gcc-toolset-12/root/usr/lib64/libgcc_s.so.1 \
-        "$W/llama.cpp/build/bin/" 2>/dev/null || true
-  log "已打包自带 libstdc++/libgcc(toolset 版)"
+# fail loud:kylin 档若仍动态依赖 libstdc++,目标机(麒麟 V10 仅 GLIBCXX_3.4.24)必挂
+if [ -d /opt/rh/gcc-toolset-12 ]; then
+  if ldd "$W/llama.cpp/build/bin/llama-server" 2>/dev/null | grep -q libstdc++; then
+    die "静态链接未生效:llama-server 仍依赖系统 libstdc++(目标机会 GLIBCXX not found)"
+  fi
+  log "静态链接自检通过(无 libstdc++ 动态依赖)"
 fi
 LLAMA_TAR="$BUNDLE/llama-$LLAMA_TAG-src-$DISTRO_SLUG-x64.tar.gz"
 tar -czf "$LLAMA_TAR.part" -C "$W/llama.cpp/build/bin" .
