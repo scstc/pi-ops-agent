@@ -243,15 +243,20 @@ MARKER_="\$HOME_DIR_/.last-use"
 
 model_up() { curl -sf -m 2 -H "Authorization: Bearer \$KEY_" "http://127.0.0.1:\$PORT_/v1/models" >/dev/null 2>&1; }
 if ! model_up; then
-  echo "[pi-ops] 本地模型未运行,启动中(首次加载约 0.5~1 分钟)…" >&2
+  echo "[pi-ops] 本地模型未运行,启动中…" >&2
   systemctl --user start pi-ops-llama 2>/dev/null \\
     || { nohup "\$HOME_DIR_/bin/llama-run" >>"\$HOME_DIR_/logs/llama.out" 2>&1 & echo \$! > "\$HOME_DIR_/llama.pid"; }
-  ok_=0
-  for i_ in \$(seq 1 "\${PI_OPS_START_TIMEOUT:-180}"); do
+  ok_=0; t_="\${PI_OPS_START_TIMEOUT:-180}"
+  for i_ in \$(seq 1 "\$t_"); do
     model_up && { ok_=1; break; }
+    printf '\r[pi-ops] 模型加载中… %ss / 上限 %ss ' "\$i_" "\$t_" >&2
     sleep 1
   done
-  [ "\$ok_" = 1 ] || echo "[pi-ops] 警告:模型服务 \${PI_OPS_START_TIMEOUT:-180}s 未就绪,继续启动 pi(可能连不上模型)" >&2
+  if [ "\$ok_" = 1 ]; then
+    printf '\r[pi-ops] 模型就绪(耗时 %ss),进入 pi…%s\n' "\$i_" "\$(printf '%60s' ' ')" >&2
+  else
+    printf '\r\033[2K[pi-ops] 警告:模型服务 %ss 未就绪,继续启动 pi(可能连不上模型)\n' "\$t_" >&2
+  fi
 fi
 touch "\$MARKER_"
 
