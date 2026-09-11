@@ -1,4 +1,4 @@
-# pi-intranet-ops-agent
+# pi-ops-agent
 
 内网(air-gapped)离线部署运维 Agent:基于开源 agent 框架 [pi](https://pi.dev) + 本地 Qwen 小模型,打包成**免联网、直接安装**的离线交付包,跑在无法访问互联网的内网/客户现场服务器上。
 
