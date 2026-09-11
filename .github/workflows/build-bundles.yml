@@ -28,11 +28,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Ubuntu 档:22.04 上构建,产物兼容 22.04/24.04(如需兼容 20.04,基座换 ubuntu:20.04)
-          - { slug: ubuntu-22.04, image: 'ubuntu:22.04' }
           # 麒麟 V10 Lance 档:麒麟无公开容器镜像,用同为 RHEL8 血统、glibc 2.28 的
           # rockylinux:8 做构建基座;产物命名 kylin-v10,兼容麒麟 V10 / RHEL8 系
           - { slug: kylin-v10,    image: 'rockylinux:8' }
+          # 需要 Ubuntu 包时恢复此行(基座按需换 ubuntu:20.04 兼容更老版本):
+          # - { slug: ubuntu-22.04, image: 'ubuntu:22.04' }
     container:
       image: ${{ matrix.image }}
     steps:
