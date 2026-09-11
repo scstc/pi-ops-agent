@@ -133,7 +133,8 @@ pi 没有任何内置审批弹窗——bash 以运行用户权限直接执行。
 - [x] WSL PoC:fetch-bundle + install 全流程跑通,pi 对接本地 llama-server(2026-09-11)
 - [x] 最小运维骨架验证:SYSTEM.md + 只读工具(返回真实数据)+ 审批门实测拦截 rm -rf(2026-09-11)
 - [x] 5 个真实运维任务对 qwen3.5-2b / 4b 实测:4b 稳 5/5;2b 有波动(见「评测结果」)(2026-09-11)
-- [ ] 真机内网交付演练(tarball 拷贝 → install → 冒烟)
+- [x] 真机内网交付演练:**麒麟 V10(Halberd,10.60.1.64)全新安装全绿,零外联实测**(v26.3.4,2026-09-11;踩掉信创三坑:libstdc++ 版本轴 / crash-loop core dump 砸盘 / GGML_NATIVE 指令集,详见 git log)
+- [x] 环境自检 env-check.sh + 卸载 uninstall.sh(真机验证)(2026-09-11)
 - [ ] 对抗评审后续:上游产物钉版 + 哈希固定(MANIFEST 目前只防搬运损坏)
 - [ ] 可选:`scripts/build-binaries.sh --offline-model-data` 单二进制形态对比
 
