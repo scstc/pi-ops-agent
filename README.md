@@ -70,6 +70,7 @@ pi-ops                # ③ 装完即用
 | `bash env-check.sh` | 部署前置自检 |
 | `./uninstall.sh [-y]` | 卸载 |
 | `systemctl --user status pi-ops-llama` | 服务管理(无 systemd 时 `~/pi-ops-agent/bin/llama-run &`) |
+| `echo 0 > ~/pi-ops-agent/idle-min` | **模型生命周期**:`0` = pi 退出即停;`5`(默认)= 空闲 5 分钟自动回收;大数值 = 常驻 |
 | `MODEL=~/pi-ops-agent/models/xx.gguf` 重启服务 | 服务端换模型(A/B 用) |
 
 临时切服务端模型:`systemctl --user set-environment MODEL=$HOME/pi-ops-agent/models/qwen3.5-4b.gguf && systemctl --user restart pi-ops-llama`(重装会自动归位默认模型)。
@@ -86,6 +87,8 @@ pi-ops                # ③ 装完即用
 │   models.json / settings.json / SYSTEM.md                │ pi 配置(install 自动生成)
 │   extensions/pi-ops-tools.ts                             │ 审批门 + 只读运维工具
 │ 服务:systemd --user + linger(登出不死);nohup 兜底     │
+│ 模型:pi-ops 按需拉起,空闲自动回收(默认 5 分钟,       │
+│       idle-min 可调;退出即停设 0)——不占常驻内存      │
 └──────────────────────────────────────────────────────────┘
 ```
 

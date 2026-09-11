@@ -213,6 +213,7 @@ cat > "$PI_OPS_HOME/bin/llama-run" <<EOF
 # 临时切模型(如 A/B):MODEL=$PI_OPS_HOME/models/qwen3.5-4b.gguf 再重启服务
 # 关 core dump:crash-loop 时每轮可砸 1.5GB+ 核转储,把磁盘 IO 打满(D 态卡整机)
 ulimit -c 0 2>/dev/null || true
+touch "$PI_OPS_HOME/.last-use" 2>/dev/null || true   # 保鲜标记(空闲回收的计时基准)
 export LD_LIBRARY_PATH="$LLAMA_DIR\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
 MODEL_GGUF="\${MODEL:-$DEFAULT_GGUF}"
 exec "$LLAMA_BIN" \\
@@ -231,12 +232,50 @@ else
 fi
 cat > "$PI_OPS_HOME/bin/pi-ops" <<EOF
 #!/usr/bin/env bash
-# 由 install.sh 生成:离线模式启动 pi
+# 由 install.sh 生成:离线模式启动 pi;模型服务按需拉起 + 空闲回收(见 bin/idle-stop.sh)
+# idle-min 配置文件:0 = pi 退出即停模型;N>0 = 空闲 N 分钟后自动停;很大 = 常驻
 export PI_OFFLINE=1 PI_TELEMETRY=0
 $PATHLINE
-exec "$NODE" "$PI_CLI" "\$@"
+HOME_DIR_="$PI_OPS_HOME"
+PORT_="$PORT"
+KEY_="\$(cat "\$HOME_DIR_/llama.key" 2>/dev/null)"
+MARKER_="\$HOME_DIR_/.last-use"
+
+model_up() { curl -sf -m 2 -H "Authorization: Bearer \$KEY_" "http://127.0.0.1:\$PORT_/v1/models" >/dev/null 2>&1; }
+if ! model_up; then
+  echo "[pi-ops] 本地模型未运行,启动中(首次加载约 0.5~1 分钟)…" >&2
+  systemctl --user start pi-ops-llama 2>/dev/null \\
+    || { nohup "\$HOME_DIR_/bin/llama-run" >>"\$HOME_DIR_/logs/llama.out" 2>&1 & echo \$! > "\$HOME_DIR_/llama.pid"; }
+  ok_=0
+  for i_ in \$(seq 1 "\${PI_OPS_START_TIMEOUT:-180}"); do
+    model_up && { ok_=1; break; }
+    sleep 1
+  done
+  [ "\$ok_" = 1 ] || echo "[pi-ops] 警告:模型服务 \${PI_OPS_START_TIMEOUT:-180}s 未就绪,继续启动 pi(可能连不上模型)" >&2
+fi
+touch "\$MARKER_"
+
+"$NODE" "$PI_CLI" "\$@" &
+pi_pid_=\$!
+( while kill -0 "\$pi_pid_" 2>/dev/null; do touch "\$MARKER_"; sleep 30; done ) &
+refresh_=\$!
+wait "\$pi_pid_"; rc_=\$?
+kill "\$refresh_" 2>/dev/null
+touch "\$MARKER_"
+
+if [ "\$(cat "\$HOME_DIR_/idle-min" 2>/dev/null || echo 5)" = "0" ]; then
+  systemctl --user stop pi-ops-llama 2>/dev/null \\
+    || kill "\$(cat "\$HOME_DIR_/llama.pid" 2>/dev/null)" 2>/dev/null || true
+  rm -f "\$HOME_DIR_/llama.pid"
+fi
+exit "\$rc_"
 EOF
 chmod +x "$PI_OPS_HOME/bin/pi-ops"
+
+# 空闲回收组件与默认空闲窗口(分钟)
+cp "$ROOT/assets/bin/idle-stop.sh" "$PI_OPS_HOME/bin/idle-stop.sh"
+chmod +x "$PI_OPS_HOME/bin/idle-stop.sh"
+[ -f "$PI_OPS_HOME/idle-min" ] || echo 5 > "$PI_OPS_HOME/idle-min"
 
 # 部署验证指令(架构文档驱动:确定性实测层 + agent 解读)
 cp "$ROOT/assets/bin/pi-ops-verify" "$PI_OPS_HOME/bin/pi-ops-verify"
@@ -284,6 +323,27 @@ EOF
   else
     warn "无法启用 linger:登出最后一个会话后服务会停止,需管理员执行:loginctl enable-linger $USER"
   fi
+  # 空闲回收定时器:每分钟检查 .last-use,超窗即停模型释放内存(idle-min 可调)
+  cat > "$HOME/.config/systemd/user/pi-ops-llama-idle.service" <<EOF
+[Unit]
+Description=pi-ops-agent llama-server idle reaper
+[Service]
+Type=oneshot
+ExecStart="$PI_OPS_HOME/bin/idle-stop.sh"
+EOF
+  cat > "$HOME/.config/systemd/user/pi-ops-llama-idle.timer" <<EOF
+[Unit]
+Description=Reap idle pi-ops llama-server
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+Persistent=true
+[Install]
+WantedBy=timers.target
+EOF
+  systemctl --user daemon-reload
+  systemctl --user enable --now pi-ops-llama-idle.timer >/dev/null 2>&1 \
+    || warn "空闲回收定时器启用失败(模型将常驻;可手动把 bin/idle-stop.sh 挂 cron)"
 else
   log "systemd --user 不可用(状态:${SYS_STATE:-无}),nohup 兜底启动"
   nohup "$RUNNER" > "$PI_OPS_HOME/logs/llama.out" 2>&1 &
