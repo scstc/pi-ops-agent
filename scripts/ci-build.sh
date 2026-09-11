@@ -61,6 +61,15 @@ if [ ! -x "$W/llama.cpp/build/bin/llama-server" ]; then
   cmake --build "$W/llama.cpp/build" -j"$(nproc)" >/dev/null
 fi
 [ -x "$W/llama.cpp/build/bin/llama-server" ] || die "llama-server 编译失败"
+# RHEL8 系目标机的系统 libstdc++ 可能过老(实测麒麟 V10 只有 GLIBCXX_3.4.24,而
+# gcc-toolset-12 编译产物需要 ≥3.4.25)→ 把 toolset 的新版 C++ 运行库打进包,
+# llama-run 的 LD_LIBRARY_PATH(=二进制目录)会优先加载,不赌目标机环境
+if [ -d /opt/rh/gcc-toolset-12/root/usr/lib64 ]; then
+  cp -a /opt/rh/gcc-toolset-12/root/usr/lib64/libstdc++.so.6* \
+        /opt/rh/gcc-toolset-12/root/usr/lib64/libgcc_s.so.1 \
+        "$W/llama.cpp/build/bin/" 2>/dev/null || true
+  log "已打包自带 libstdc++/libgcc(toolset 版)"
+fi
 LLAMA_TAR="$BUNDLE/llama-$LLAMA_TAG-src-$DISTRO_SLUG-x64.tar.gz"
 tar -czf "$LLAMA_TAR.part" -C "$W/llama.cpp/build/bin" .
 mv "$LLAMA_TAR.part" "$LLAMA_TAR"
