@@ -73,7 +73,16 @@ pi-ops                   # 装完即用(交互 TUI);或 pi-ops -p "查一下磁�
 - 全部装在 `~/pi-ops-agent`(不动系统目录、不需要 root);systemd `--user` 优先,不可用时 nohup 兜底
 - 产物来源全部走国内可达通道:npmmirror(node/npm)、github release(llama.cpp,断点重试×3)、hf-mirror(模型 GGUF)
 - ⚠️ 模型 GGUF 选 bartowski(llama.cpp 官方转换器产出):Ollama registry 的 qwen3.5 GGUF 与 llama.cpp 加载器存在 rope 段数约定错配(`expected 4, got 3`),不能用
-- llama.cpp 预编译二进制 glibc 门槛随版本漂移:目标机发行版过老时,在老基础容器里自编译后替换 bundle 里的 tarball 即可
+- llama.cpp 预编译二进制 glibc 门槛随版本漂移 → **CI 方案已解决**:每个目标发行版在对应容器内源码编译(见下),产物天然匹配该发行版 glibc
+
+### CI 多发行版离线包(GitHub Actions)
+
+`.github/workflows/build-bundles.yml`:push main / 打 `v*` tag / 手动触发 → 5 个目标并行构建(ubuntu-20.04/22.04、debian-12、rockylinux-8/9):
+
+- 每个目标在**对应发行版容器**内源码编译 llama.cpp(钉 `LLAMA_TAG`),组装含默认 2b 模型的完整离线包(约 1.6GB),并在同容器跑 `install.sh` 全流程冒烟(容器无 systemd → 顺带覆盖 nohup 兜底路径)
+- 产物:workflow artifact `bundle-<distro>`(保留 7 天);push `v*` tag 自动聚合挂到 GitHub Release
+- **rockylinux-8(glibc 2.28)档同时覆盖 RHEL/CentOS 8 系与信创系统**(麒麟 V10 Lance、统信 UOS 服务器版等 RHEL8 血统发行版,官方 Node 22 的 glibc 下限正是 2.28)
+- 本地备货(国内网络)仍用 `./fetch-bundle.sh`(镜像源);CI 走官方源,两者产物结构一致,`install.sh` 通吃
 
 ## 安全模型(pi 的特殊性)
 

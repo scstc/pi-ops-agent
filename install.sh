@@ -66,8 +66,8 @@ LLAMA_BIN="$(command -v llama-server || true)"
 if [ -n "$LLAMA_BIN" ]; then
   log "检测到系统 llama-server:$LLAMA_BIN,复用"
 else
-  LLAMA_TGZ="$(ls "$BUNDLE"/llama-*-bin-ubuntu-x64.tar.gz 2>/dev/null | head -1 || true)"
-  [ -n "$LLAMA_TGZ" ] || die "无 llama-server(系统未装且 bundle 缺 llama-*-bin-ubuntu-x64.tar.gz)"
+  LLAMA_TGZ="$(ls "$BUNDLE"/llama-*.tar.gz 2>/dev/null | head -1 || true)"
+  [ -n "$LLAMA_TGZ" ] || die "无 llama-server(系统未装且 bundle 缺 llama-*.tar.gz)"
   log "离线安装 llama.cpp:$(basename "$LLAMA_TGZ")"
   rm -rf "$PI_OPS_HOME/llama"; mkdir -p "$PI_OPS_HOME/llama"
   tar -xzf "$LLAMA_TGZ" -C "$PI_OPS_HOME/llama"
@@ -143,7 +143,7 @@ if [ -f "$PI_OPS_HOME/llama.pid" ] && kill -0 "$(cat "$PI_OPS_HOME/llama.pid" 2>
 fi
 rm -f "$PI_OPS_HOME/llama.pid"
 # 清掉任何残留 llama-server(防双实例双内存;本脚本 cmdline 不含该词,无自杀风险)
-pkill -u "$(id -un)" -f llama-server 2>/dev/null || true
+command -v pkill >/dev/null 2>&1 && pkill -u "$(id -un)" -f llama-server 2>/dev/null || true
 sleep 2
 if command -v ss >/dev/null 2>&1; then
   while ss -tln 2>/dev/null | grep -qE ":$PORT[[:space:]]"; do PORT=$((PORT + 1)); done
@@ -298,7 +298,8 @@ smoke="$(curl -sf -m 60 -H "Authorization: Bearer $LLAMA_KEY" -H 'Content-Type: 
   "http://127.0.0.1:$PORT/v1/chat/completions")" || die "chat 接口冒烟失败(检查 llama 日志与 llama.key)"
 log "chat 响应片段:${smoke:0:160}"
 
-if command -v timeout >/dev/null 2>&1; then TO="timeout 240"; else TO=""; fi
+# PI_SMOKE_TIMEOUT:冒烟单步超时(默认 240s;慢机器如 CI 2 vCPU 容器可调大)
+if command -v timeout >/dev/null 2>&1; then TO="timeout ${PI_SMOKE_TIMEOUT:-240}"; else TO=""; fi
 # 注意:pi -p 会等待 stdin EOF,非交互环境必须显式关闭 stdin
 log "冒烟:pi 端到端(headless)…"
 $TO "$PI_OPS_HOME/bin/pi-ops" -p "用一句话自我介绍(你是 pi-ops-agent),然后只回复:就绪" < /dev/null \

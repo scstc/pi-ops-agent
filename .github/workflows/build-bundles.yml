@@ -1,0 +1,83 @@
+name: build-offline-bundles
+
+# 多发行版离线安装包:在目标发行版容器内源码编译 llama.cpp(产物天然匹配该发行版
+# glibc,规避预编译包门槛漂移),组装含默认 2b 模型的完整离线包,并在同容器内跑
+# install.sh 冒烟(容器无 systemd,顺带覆盖 nohup 兜底路径)。
+# 产物:workflow artifact(bundle-<distro>);push v* tag 时自动挂 GitHub Release。
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+concurrency:
+  group: bundles-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  LLAMA_TAG: b10901          # llama.cpp 源码编译的钉版 tag,升级时改这里
+  NODE_VER: '22.20.0'        # ≥22.19(pi 的硬要求);rocky8(glibc 2.28)是官方 Node 22 下限
+  GGUF_URL: https://huggingface.co/bartowski/Qwen_Qwen3.5-2B-GGUF/resolve/main/Qwen_Qwen3.5-2B-Q4_K_M.gguf
+
+jobs:
+  build:
+    name: bundle / ${{ matrix.slug }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { slug: ubuntu-20.04, image: 'ubuntu:20.04' }   # glibc 2.31
+          - { slug: ubuntu-22.04, image: 'ubuntu:22.04' }   # glibc 2.35
+          - { slug: debian-12,    image: 'debian:12' }      # glibc 2.36
+          - { slug: rockylinux-8, image: 'rockylinux:8' }   # glibc 2.28(官方 Node 22 下限);兼容 RHEL8 系与信创:麒麟 V10 Lance / UOS 服务器版
+          - { slug: rockylinux-9, image: 'rockylinux:9' }   # glibc 2.34
+    container:
+      image: ${{ matrix.image }}
+    steps:
+      - name: 容器预装 git/证书(actions/checkout 需要)
+        run: |
+          if command -v apt-get >/dev/null 2>&1; then
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update -qq && apt-get install -y -qq git ca-certificates curl xz-utils >/dev/null
+          else
+            dnf install -y -q git ca-certificates curl xz tar findutils
+          fi
+      - uses: actions/checkout@v4
+
+      - name: 缓存模型 GGUF(1.4GB,按文件名钉 key)
+        uses: actions/cache@v4
+        with:
+          path: .ci-gguf-cache/qwen3.5-2b.gguf
+          key: gguf-qwen3.5-2b-Q4_K_M
+
+      - name: 构建离线包并冒烟
+        run: scripts/ci-build.sh
+        env:
+          DISTRO_SLUG: ${{ matrix.slug }}
+          GGUF_CACHE: ${{ github.workspace }}/.ci-gguf-cache/qwen3.5-2b.gguf
+          PI_OPS_VERSION: ${{ github.ref_name == 'main' && format('dev-{0}', github.sha) || github.ref_name }}
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: bundle-${{ matrix.slug }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: 'bundle-*'
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
