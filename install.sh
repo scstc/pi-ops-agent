@@ -255,11 +255,11 @@ if ! model_up; then
 fi
 touch "\$MARKER_"
 
-"$NODE" "$PI_CLI" "\$@" &
-pi_pid_=\$!
-( while kill -0 "\$pi_pid_" 2>/dev/null; do touch "\$MARKER_"; sleep 30; done ) &
+# 刷新循环在后台跑(pi 必须前台:TUI 在后台拿不到终端会静默退出)
+( while :; do sleep 30; touch "\$MARKER_"; done ) &
 refresh_=\$!
-wait "\$pi_pid_"; rc_=\$?
+"$NODE" "$PI_CLI" "\$@"
+rc_=\$?
 kill "\$refresh_" 2>/dev/null
 touch "\$MARKER_"
 
