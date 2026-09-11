@@ -265,6 +265,9 @@ WantedBy=default.target
 EOF
   systemctl --user daemon-reload
   systemctl --user enable pi-ops-llama >/dev/null 2>&1 || true
+  # 重装=回归默认模型:清掉"临时 A/B 切换"用的管理器级 MODEL 变量
+  # (它是 set-environment 设的,跨服务重启存活,不清会静默压过安装默认值)
+  systemctl --user unset-environment MODEL 2>/dev/null || true
   # restart 而非 enable --now:单元可能已在跑旧配置,必须强制换新
   systemctl --user restart pi-ops-llama
   if loginctl enable-linger "$USER" 2>/dev/null; then
