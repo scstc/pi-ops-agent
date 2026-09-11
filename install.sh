@@ -236,8 +236,15 @@ exec "$NODE" "$PI_CLI" "\$@"
 EOF
 chmod +x "$PI_OPS_HOME/bin/pi-ops"
 
-grep -qF "${PI_OPS_HOME}/bin" "$HOME/.bashrc" 2>/dev/null || \
+# PATH 写入 shell rc:zsh 用户读 .zshrc 不读 .bashrc,已存在的 rc 都补一份
+for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
+  [ -f "$rc" ] || continue
+  grep -qF "${PI_OPS_HOME}/bin" "$rc" 2>/dev/null || \
+    printf 'export PATH="%s/bin:$PATH"  # pi-ops-agent\n' "$PI_OPS_HOME" >> "$rc"
+done
+if [ ! -f "$HOME/.bashrc" ] && [ ! -f "$HOME/.zshrc" ]; then
   printf 'export PATH="%s/bin:$PATH"  # pi-ops-agent\n' "$PI_OPS_HOME" >> "$HOME/.bashrc"
+fi
 
 # ---------- 10. 起服务:优先 systemd --user(接受 degraded),失败则 nohup 兜底 ----------
 RUNNER="$PI_OPS_HOME/bin/llama-run"
