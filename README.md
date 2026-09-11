@@ -77,11 +77,16 @@ pi-ops                   # 装完即用(交互 TUI);或 pi-ops -p "查一下磁�
 
 ### CI 多发行版离线包(GitHub Actions)
 
-`.github/workflows/build-bundles.yml`:push main / 打 `v*` tag / 手动触发 → 5 个目标并行构建(ubuntu-20.04/22.04、debian-12、rockylinux-8/9):
+`.github/workflows/build-bundles.yml`:push main / 打 `v*` tag / 手动触发 → 2 个目标并行构建:
+
+| 目标档 | 构建基座 | 兼容 |
+|---|---|---|
+| `ubuntu-22.04` | ubuntu:22.04 | Ubuntu 22.04/24.04(需兼容 20.04 则基座换 ubuntu:20.04) |
+| `kylin-v10` | rockylinux:8(麒麟无公开容器镜像,用同为 RHEL8 血统、glibc 2.28 的基座) | **麒麟 V10 Lance**、RHEL/CentOS 8 系、统信 UOS 服务器版 |
 
 - 每个目标在**对应发行版容器**内源码编译 llama.cpp(钉 `LLAMA_TAG`),组装含默认 2b 模型的完整离线包(约 1.6GB),并在同容器跑 `install.sh` 全流程冒烟(容器无 systemd → 顺带覆盖 nohup 兜底路径)
 - 产物:workflow artifact `bundle-<distro>`(保留 7 天);push `v*` tag 自动聚合挂到 GitHub Release
-- **rockylinux-8(glibc 2.28)档同时覆盖 RHEL/CentOS 8 系与信创系统**(麒麟 V10 Lance、统信 UOS 服务器版等 RHEL8 血统发行版,官方 Node 22 的 glibc 下限正是 2.28)
+- 兼容下限:官方 Node 22 要求 glibc ≥2.28,rocky8 基座正好踩线——这也是此方案能覆盖的最老发行版线(更老的 CentOS 7/glibc 2.17 需换非官方 Node 构建,不在默认支持内)
 - 本地备货(国内网络)仍用 `./fetch-bundle.sh`(镜像源);CI 走官方源,两者产物结构一致,`install.sh` 通吃
 
 ## 安全模型(pi 的特殊性)
