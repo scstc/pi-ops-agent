@@ -7,14 +7,23 @@
 #   文档含 ```deploy-spec 块 → verify-check.js【确定性实测】(ss/pgrep/systemctl/curl/fs/net)
 #   → 实测表 + 期望清单 交给 agent → agent 只做"对照判定 + 汇总 + 修复建议",
 #   禁止自行探测(杜绝小模型编造证据);无 spec 块则整篇文档自由理解(建议配 4b)。
+# 控制台输出语言自适应:UTF-8 终端中文,否则 ASCII 英文(喂给模型的提示词始终中文)
 set -euo pipefail
 
-DOC="${1:?用法: pi-ops-verify <架构文档.md> [输出报告.md]}"
+DOC="${1:?用法: pi-ops-verify <架构文档.md> [输出报告.md] | usage: pi-ops-verify <doc.md> [report.md]}"
 OUT="${2:-verify-report-$(date +%Y%m%d-%H%M%S).md}"
 PI_OPS_HOME="${PI_OPS_HOME:-$HOME/pi-ops-agent}"
-[ -f "$DOC" ] || { echo "文档不存在: $DOC" >&2; exit 2; }
+
+IS_UTF8=0
+case "${LC_ALL:-${LANG:-}}" in *UTF-8*|*utf8*|*UTF8*) IS_UTF8=1 ;; esac
+if [ "$IS_UTF8" = 0 ] && command -v locale >/dev/null 2>&1; then
+  case "$(locale charmap 2>/dev/null)" in UTF-8|UTF8|utf-8|utf8) IS_UTF8=1 ;; esac
+fi
+msg() { if [ "$IS_UTF8" = 1 ]; then printf '%s' "$1"; else printf '%s' "${2:-$1}"; fi; }
+
+[ -f "$DOC" ] || { echo "$(msg "文档不存在: $DOC" "doc not found: $DOC")" >&2; exit 2; }
 P="$PI_OPS_HOME/bin/pi-ops"
-[ -x "$P" ] || { echo "未找到 $P,请先运行 install.sh" >&2; exit 2; }
+[ -x "$P" ] || { echo "$(msg "未找到 $P,请先运行 install.sh" "$P not found, run install.sh first")" >&2; exit 2; }
 NODE="$PI_OPS_HOME/node/bin/node"; command -v node >/dev/null 2>&1 && NODE="$(command -v node)"
 [ -x "$NODE" ] || NODE="$PI_OPS_HOME/node/bin/node"
 
@@ -30,7 +39,8 @@ PROMPT_HEAD='你是 pi-ops-agent 的【部署验证模式】。规则:
 if [ -s "$SPEC_FILE" ]; then
   # ---- 确定性实测层 ----
   FACTS="$("$NODE" "$PI_OPS_HOME/lib/verify-check.js" "$SPEC_FILE")" || {
-    echo "[pi-ops-verify] 实测层执行失败:" >&2; echo "$FACTS" >&2; exit 1; }
+    echo "$(msg "[pi-ops-verify] 实测层执行失败:" "[pi-ops-verify] deterministic check layer failed:")" >&2
+    echo "$FACTS" >&2; exit 1; }
   RESULT_LINE="$(printf '%s\n' "$FACTS" | grep '^RESULT ' | tail -1)"
   FAILED="$(echo "$RESULT_LINE" | sed -n 's/.*failed=\([0-9]*\).*/\1/p')"
 
@@ -48,14 +58,15 @@ $(cat "$SPEC_FILE")
 【实测结果】:
 $FACTS"
 else
-  echo "[pi-ops-verify] 注意:文档无 deploy-spec 块,走自由理解通道(小模型可靠性有限,建议补 spec 块或用 4b)" >&2
+  echo "$(msg "[pi-ops-verify] 注意:文档无 deploy-spec 块,走自由理解通道(小模型可靠性有限,建议补 spec 块或用 4b)" \
+             "[pi-ops-verify] note: no deploy-spec block, free-form mode (less reliable on small models; add a spec block or use 4b)")" >&2
   PROMPT="$PROMPT_HEAD
 
 部署架构文档全文,请逐项验证并输出:逐项表格(✅/❌/⚠️+证据)+ 汇总 + 失败项修复建议:
 $(cat "$DOC")"
 fi
 
-echo "[pi-ops-verify] 文档:$DOC  报告:$OUT"
+echo "[pi-ops-verify] $(msg "文档:$DOC  报告:$OUT" "doc: $DOC  report: $OUT")"
 if command -v timeout >/dev/null 2>&1; then TO="timeout ${PI_VERIFY_TIMEOUT:-900}"; else TO=""; fi
 # 注意:pi -p 会等 stdin EOF,非交互必须显式关闭
 RC=0
@@ -63,8 +74,8 @@ $TO "$P" -p "$PROMPT" < /dev/null | tee "$OUT" || RC=$?
 rm -f "$SPEC_FILE"
 
 if [ -n "${FAILED:-}" ] && [ "$FAILED" -gt 0 ]; then
-  echo "[pi-ops-verify] 完成:实测存在 $FAILED 项不符(详见报告)" >&2
+  echo "[pi-ops-verify] $(msg "完成:实测存在 $FAILED 项不符(详见报告)" "done: $FAILED check(s) FAILED (see report)")" >&2
   exit 1
 fi
-echo "[pi-ops-verify] 完成:实测全部符合,报告已存 $OUT"
+echo "[pi-ops-verify] $(msg "完成:实测全部符合,报告已存 $OUT" "done: all checks passed, report saved to $OUT")"
 exit "$RC"
