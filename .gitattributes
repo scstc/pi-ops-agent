@@ -1,0 +1,6 @@
+# Windows 协作时钉死 LF,防止脚本拷到 Linux 后因 \r 报错
+*.sh   text eol=lf
+*.ts   text eol=lf
+*.md   text eol=lf
+*.json text eol=lf
+*.service text eol=lf

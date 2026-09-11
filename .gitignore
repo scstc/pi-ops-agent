@@ -1,10 +1,16 @@
-# ---------- 模型文件(体积大,不入库;由交付流程分发) ----------
+# ---------- 离线产物(fetch-bundle.sh 生成/下载,不入库) ----------
+bundle/
+.tools/
+*.part
 *.gguf
 models/
 
 # ---------- Node ----------
 node_modules/
 dist/
+
+# ---------- 评测输出(eval-ops.sh 生成,不入库) ----------
+tests/out-*/
 
 # ---------- Env / Secrets ----------
 .env
