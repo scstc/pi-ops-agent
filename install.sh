@@ -236,9 +236,11 @@ exec "$NODE" "$PI_CLI" "\$@"
 EOF
 chmod +x "$PI_OPS_HOME/bin/pi-ops"
 
-# 部署验证指令(架构文档驱动的只读巡检)
+# 部署验证指令(架构文档驱动:确定性实测层 + agent 解读)
 cp "$ROOT/assets/bin/pi-ops-verify" "$PI_OPS_HOME/bin/pi-ops-verify"
 chmod +x "$PI_OPS_HOME/bin/pi-ops-verify"
+mkdir -p "$PI_OPS_HOME/lib"
+cp "$ROOT/assets/lib/verify-check.js" "$PI_OPS_HOME/lib/verify-check.js"
 
 # PATH 写入 shell rc:zsh 用户读 .zshrc 不读 .bashrc,已存在的 rc 都补一份
 for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do

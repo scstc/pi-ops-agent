@@ -1,59 +1,70 @@
 #!/usr/bin/env bash
 # pi-ops-verify —— 部署架构文档驱动的部署验证(只读)
 # 用法: pi-ops-verify <架构文档.md> [输出报告.md]
+# 退出码:0=全部符合 / 1=存在不符项或无法完成 / 2=用法错误(可挂 cron 告警)
 #
-# 文档格式(双通道):
-#   1) 文档含 ```deploy-spec YAML 代码块 → 优先按该结构化清单逐项验证(推荐,可靠)
-#   2) 无 spec 块 → 整篇文档交给 agent 理解后自由验证(wiki 随手贴的降级通道)
-# 全程只读(ss/curl/systemctl status/ls/cat/ps);危险命令会被审批门拦截(headless 下默认拒绝)
+# 架构(防幻觉设计):
+#   文档含 ```deploy-spec 块 → verify-check.js【确定性实测】(ss/pgrep/systemctl/curl/fs/net)
+#   → 实测表 + 期望清单 交给 agent → agent 只做"对照判定 + 汇总 + 修复建议",
+#   禁止自行探测(杜绝小模型编造证据);无 spec 块则整篇文档自由理解(建议配 4b)。
 set -euo pipefail
 
 DOC="${1:?用法: pi-ops-verify <架构文档.md> [输出报告.md]}"
 OUT="${2:-verify-report-$(date +%Y%m%d-%H%M%S).md}"
 PI_OPS_HOME="${PI_OPS_HOME:-$HOME/pi-ops-agent}"
-[ -f "$DOC" ] || { echo "文档不存在: $DOC" >&2; exit 1; }
+[ -f "$DOC" ] || { echo "文档不存在: $DOC" >&2; exit 2; }
 P="$PI_OPS_HOME/bin/pi-ops"
-[ -x "$P" ] || { echo "未找到 $P,请先运行 install.sh" >&2; exit 1; }
+[ -x "$P" ] || { echo "未找到 $P,请先运行 install.sh" >&2; exit 2; }
+NODE="$PI_OPS_HOME/node/bin/node"; command -v node >/dev/null 2>&1 && NODE="$(command -v node)"
+[ -x "$NODE" ] || NODE="$PI_OPS_HOME/node/bin/node"
 
 # 提取 ```deploy-spec 块(不存在则为空)
-SPEC="$(awk '/^``` *deploy-spec/{f=1;next} f && /^```/{f=0;next} f' "$DOC")"
+SPEC_FILE="/tmp/pi-ops-spec.$$"
+awk '/^``` *deploy-spec/{f=1;next} f && /^```/{f=0;next} f' "$DOC" > "$SPEC_FILE"
 
-PROMPT='你是 pi-ops-agent 的【部署验证模式】。下面给你一份部署架构文档,请在当前服务器上逐项核对实际部署状态。
+PROMPT_HEAD='你是 pi-ops-agent 的【部署验证模式】。规则:
+1. 只做只读操作;危险命令会被审批门拦截
+2. 网络探测一律 -m 3 超时,不通就标记,不要卡住
+3. 用中文,直接输出报告正文'
 
-规则(严格遵守):
-1. 只做只读操作:ss -tln / curl(探测一律加 -m 3)/ systemctl status / ps / ls / cat / test -d;禁止任何修改性命令
-2. 省轮次:能合并的检查合并成一条命令(如 `ss -tln | grep -E "8787|8848"` 一次查多端口;`ls -d /a /b` 一次查多目录),不要一项一轮
-3. 服务单元查询:用户级服务必须用 `systemctl --user status <名>`(如 pi-ops-llama 是用户级);端口用 ss 查,比 systemctl 更直接
-4. 逐项输出一行:| 名称 | 期望 | 实际 | ✅通过/❌不符/⚠️无法验证 | 证据(输出关键片段) |
-5. 网络探测必须带 -m 3 超时,不通就标记,不要卡住
-6. 全部验完输出汇总(通过 x / 失败 y / 无法验证 z),每个 ❌ 给一句话修复建议
-7. 用中文,直接输出报告正文'
+if [ -s "$SPEC_FILE" ]; then
+  # ---- 确定性实测层 ----
+  FACTS="$("$NODE" "$PI_OPS_HOME/lib/verify-check.js" "$SPEC_FILE")" || {
+    echo "[pi-ops-verify] 实测层执行失败:" >&2; echo "$FACTS" >&2; exit 1; }
+  RESULT_LINE="$(printf '%s\n' "$FACTS" | grep '^RESULT ' | tail -1)"
+  FAILED="$(echo "$RESULT_LINE" | sed -n 's/.*failed=\([0-9]*\).*/\1/p')"
 
-if [ -n "$SPEC" ]; then
-  PROMPT="$PROMPT
+  PROMPT="$PROMPT_HEAD
 
-文档中有结构化部署清单(deploy-spec),必须逐条覆盖清单里的每一项:
----
-$SPEC
----
-文档全文(补充上下文):
-"
+下面是【期望】(deploy-spec 清单)与【实测结果】(脚本已确定性探测,真实可信)。
+你的任务是对照两者输出最终验证报告:
+- 逐项判定,判定结论必须与实测一致(实测"不符"就是 ❌,不得翻案)
+- 输出:逐项表格(名称/期望/实测/结论/证据)+ 汇总(通过/失败计数)+ 每个 ❌ 一句话修复建议
+- 除实测表明确标注未覆盖的项外,禁止重新探测;确需补充探测时用只读命令并在证据里注明
+
+【期望清单】:
+$(cat "$SPEC_FILE")
+
+【实测结果】:
+$FACTS"
 else
-  PROMPT="$PROMPT
+  echo "[pi-ops-verify] 注意:文档无 deploy-spec 块,走自由理解通道(小模型可靠性有限,建议补 spec 块或用 4b)" >&2
+  PROMPT="$PROMPT_HEAD
 
-部署架构文档全文:
-"
+部署架构文档全文,请逐项验证并输出:逐项表格(✅/❌/⚠️+证据)+ 汇总 + 失败项修复建议:
+$(cat "$DOC")"
 fi
 
-{
-  echo "$PROMPT"
-  cat "$DOC"
-} > /tmp/pi-ops-verify-prompt.$$
-
 echo "[pi-ops-verify] 文档:$DOC  报告:$OUT"
-if command -v timeout >/dev/null 2>&1; then TO="timeout ${PI_VERIFY_TIMEOUT:-1500}"; else TO=""; fi
+if command -v timeout >/dev/null 2>&1; then TO="timeout ${PI_VERIFY_TIMEOUT:-900}"; else TO=""; fi
 # 注意:pi -p 会等 stdin EOF,非交互必须显式关闭
-$TO "$P" -p "$(cat /tmp/pi-ops-verify-prompt.$$)" < /dev/null | tee "$OUT"
-rm -f /tmp/pi-ops-verify-prompt.$$
-echo ""
-echo "[pi-ops-verify] 完成,报告已存:$OUT"
+RC=0
+$TO "$P" -p "$PROMPT" < /dev/null | tee "$OUT" || RC=$?
+rm -f "$SPEC_FILE"
+
+if [ -n "${FAILED:-}" ] && [ "$FAILED" -gt 0 ]; then
+  echo "[pi-ops-verify] 完成:实测存在 $FAILED 项不符(详见报告)" >&2
+  exit 1
+fi
+echo "[pi-ops-verify] 完成:实测全部符合,报告已存 $OUT"
+exit "$RC"

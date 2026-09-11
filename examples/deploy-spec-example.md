@@ -19,7 +19,7 @@ services:
     port: 8848
   - name: k3d gateway                # k3d 集群网关
     port: 80
-  - name: redis                      # 缓存(示例中故意写一个未部署的,验证能否发现缺失)
+  - name: redis                      # 缓存(开发机上真实存在;若你的目标机未部署,实测层会如实标 ❌)
     port: 6379
 dirs:
   - /home/change/pi-ops-agent/models # 模型目录必须存在
