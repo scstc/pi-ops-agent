@@ -116,7 +116,7 @@ fi
 # ---------- 6. 外层交付包(仓库脚本 + assets + bundle) ----------
 VER="${PI_OPS_VERSION:-dev}"
 OUT="$DIST/pi-ops-agent-$VER-$DISTRO_SLUG-x64.tar.gz"
-tar -czf "$OUT" -C "$ROOT" install.sh assets README.md LICENSE bundle
+tar -czf "$OUT" -C "$ROOT" install.sh uninstall.sh env-check.sh assets README.md LICENSE bundle
 ( cd "$DIST" && sha256sum "$(basename "$OUT")" > "$(basename "$OUT").sha256" )
 log "交付包:$(ls -lh "$DIST" | awk 'NR>1{print $9, $5}' | tr '\n' ' ')"
 
