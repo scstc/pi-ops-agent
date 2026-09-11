@@ -2,6 +2,8 @@
 
 内网(air-gapped)离线部署运维 Agent:基于 [pi](https://pi.dev) + 本地 Qwen 小模型(llama.cpp 直跑 GGUF),打包成**免联网、不需要 root、装完零手动配置**的离线交付包,跑在无法访问互联网的内网/客户现场服务器上。
 
+> **版本号规范:`年份.季度.发布序号`**(如 `26.3.1` = 2026 年 Q3 第 1 个发布;当前版本 **v26.3.1**)。打 `v*` tag 触发 CI 构建双档离线包并自动挂 GitHub Release。
+
 > 状态:**WSL PoC 全流程跑通**(2026-09-11)——fetch-bundle 备货 → install 离线安装 → systemd 常驻(含 linger)→ chat/审批门/运维工具冒烟全过;2b/4b 已做 5 任务 A/B(见「评测结果」)。
 
 ## 快速开始
