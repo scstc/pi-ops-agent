@@ -211,6 +211,8 @@ cat > "$PI_OPS_HOME/bin/llama-run" <<EOF
 # 由 install.sh 生成:启动本地 llama-server
 # llama.cpp 预编译包是"二进制+同目录 .so"布局,必须带上 LD_LIBRARY_PATH(无尾部空项,防 cwd 注入)
 # 临时切模型(如 A/B):MODEL=$PI_OPS_HOME/models/qwen3.5-4b.gguf 再重启服务
+# 关 core dump:crash-loop 时每轮可砸 1.5GB+ 核转储,把磁盘 IO 打满(D 态卡整机)
+ulimit -c 0 2>/dev/null || true
 export LD_LIBRARY_PATH="$LLAMA_DIR\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
 MODEL_GGUF="\${MODEL:-$DEFAULT_GGUF}"
 exec "$LLAMA_BIN" \\
@@ -266,6 +268,7 @@ Type=simple
 ExecStart="$RUNNER"
 Restart=on-failure
 RestartSec=3
+LimitCORE=0
 [Install]
 WantedBy=default.target
 EOF

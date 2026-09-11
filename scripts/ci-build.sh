@@ -64,6 +64,7 @@ if [ ! -x "$W/llama.cpp/build/bin/llama-server" ]; then
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_EXE_LINKER_FLAGS="$STATIC_CPP" \
     -DCMAKE_SHARED_LINKER_FLAGS="$STATIC_CPP" \
+    -DGGML_NATIVE=OFF -DGGML_CPU_ALL_VARIANTS=ON \
     -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_CURL=OFF >/dev/null
   cmake --build "$W/llama.cpp/build" -j"$(nproc)" >/dev/null
 fi
