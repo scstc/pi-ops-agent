@@ -1,9 +1,9 @@
 name: build-offline-bundles
 
 # 多发行版离线安装包:在目标发行版容器内源码编译 llama.cpp(产物天然匹配该发行版
-# glibc,规避预编译包门槛漂移),组装含默认 2b 模型的完整离线包,并在同容器内跑
+# glibc,规避预编译包门槛漂移),按发行版 × 模型组装完整离线包,并在同容器内跑
 # install.sh 冒烟(容器无 systemd,顺带覆盖 nohup 兜底路径)。
-# 产物:workflow artifact(bundle-<distro>);push v* tag 时自动挂 GitHub Release。
+# 产物:workflow artifact(bundle-<distro>-<model>);push v* tag 时自动挂 GitHub Release。
 on:
   push:
     branches: [main]
@@ -17,24 +17,29 @@ concurrency:
 env:
   LLAMA_TAG: b10901          # llama.cpp 源码编译的钉版 tag,升级时改这里
   NODE_VER: '22.20.0'        # ≥22.19(pi 的硬要求);rocky8(glibc 2.28)是官方 Node 22 下限
-  GGUF_URL: https://huggingface.co/bartowski/Qwen_Qwen3.5-2B-GGUF/resolve/main/Qwen_Qwen3.5-2B-Q4_K_M.gguf
-
 jobs:
   build:
-    name: bundle / ${{ matrix.slug }}
+    name: bundle / ${{ matrix.target.slug }} / ${{ matrix.model.id }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        include:
+        target:
           # 麒麟 V10 Lance 档:麒麟无公开容器镜像,用同为 RHEL8 血统、glibc 2.28 的
           # rockylinux:8 做构建基座;产物命名 kylin-v10,兼容麒麟 V10 / RHEL8 系
-          - { slug: kylin-v10,    image: 'rockylinux:8' }
+          - { slug: kylin-v10, image: 'rockylinux:8' }
           # 需要 Ubuntu 包时恢复此行(基座按需换 ubuntu:20.04 兼容更老版本):
           # - { slug: ubuntu-22.04, image: 'ubuntu:22.04' }
+        model:
+          - id: qwen3.5-2b
+            gguf_url: https://huggingface.co/bartowski/Qwen_Qwen3.5-2B-GGUF/resolve/main/Qwen_Qwen3.5-2B-Q4_K_M.gguf
+            cache_key: gguf-qwen3.5-2b-Q4_K_M
+          - id: qwen3.5-0.8b
+            gguf_url: https://huggingface.co/bartowski/Qwen_Qwen3.5-0.8B-GGUF/resolve/main/Qwen_Qwen3.5-0.8B-Q4_K_M.gguf
+            cache_key: gguf-qwen3.5-0.8b-Q4_K_M
     container:
-      image: ${{ matrix.image }}
+      image: ${{ matrix.target.image }}
     steps:
       - name: 容器预装 git/证书(actions/checkout 需要)
         run: |
@@ -46,23 +51,25 @@ jobs:
           fi
       - uses: actions/checkout@v4
 
-      - name: 缓存模型 GGUF(1.4GB,按文件名钉 key)
+      - name: 缓存模型 GGUF(按模型 ID 与量化钉 key)
         uses: actions/cache@v4
         with:
-          path: .ci-gguf-cache/qwen3.5-2b.gguf
-          key: gguf-qwen3.5-2b-Q4_K_M
+          path: .ci-gguf-cache/${{ matrix.model.id }}.gguf
+          key: ${{ matrix.model.cache_key }}
 
       - name: 构建离线包并冒烟
         run: scripts/ci-build.sh
         env:
-          DISTRO_SLUG: ${{ matrix.slug }}
-          GGUF_CACHE: ${{ github.workspace }}/.ci-gguf-cache/qwen3.5-2b.gguf
+          DISTRO_SLUG: ${{ matrix.target.slug }}
+          BUNDLE_MODEL_ID: ${{ matrix.model.id }}
+          GGUF_URL: ${{ matrix.model.gguf_url }}
+          GGUF_CACHE: ${{ github.workspace }}/.ci-gguf-cache/${{ matrix.model.id }}.gguf
           PI_OPS_VERSION: ${{ github.ref_name == 'main' && format('dev-{0}', github.sha) || github.ref_name }}
 
       - name: 上传产物
         uses: actions/upload-artifact@v4
         with:
-          name: bundle-${{ matrix.slug }}
+          name: bundle-${{ matrix.target.slug }}-${{ matrix.model.id }}
           path: dist/*
           if-no-files-found: error
           retention-days: 7

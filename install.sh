@@ -114,7 +114,26 @@ for g in "$BUNDLE"/*.gguf; do
   fi
 done
 [ -n "$(ls -A "$PI_OPS_HOME/models" 2>/dev/null)" ] || die "没有任何 GGUF 模型" "no GGUF model at all"
-DEFAULT_GGUF="$PI_OPS_HOME/models/qwen3.5-2b.gguf"
+# 新包通过 default-model.txt 指定默认模型。旧包没有该文件时仍沿用 2b 优先策略。
+# 同时要求所指 GGUF 确在本 bundle 内，避免一个残缺/混装包悄然选中机器上的旧模型。
+DEFAULT_GGUF=""
+if [ -f "$BUNDLE/default-model.txt" ]; then
+  BUNDLE_DEFAULT_ID="$(tr -d '\r\n' < "$BUNDLE/default-model.txt")"
+  case "$BUNDLE_DEFAULT_ID" in
+    *[!A-Za-z0-9._-]*|'')
+      die "default-model.txt 无有效模型 ID" "default-model.txt has no valid model ID"
+      ;;
+    *)
+      if [ -f "$BUNDLE/$BUNDLE_DEFAULT_ID.gguf" ] && [ -f "$PI_OPS_HOME/models/$BUNDLE_DEFAULT_ID.gguf" ]; then
+        DEFAULT_GGUF="$PI_OPS_HOME/models/$BUNDLE_DEFAULT_ID.gguf"
+      else
+        die "default-model.txt 指定的模型不在 bundle 中:$BUNDLE_DEFAULT_ID" \
+            "default-model.txt model is missing from bundle: $BUNDLE_DEFAULT_ID"
+      fi
+      ;;
+  esac
+fi
+[ -n "$DEFAULT_GGUF" ] || DEFAULT_GGUF="$PI_OPS_HOME/models/qwen3.5-2b.gguf"
 [ -f "$DEFAULT_GGUF" ] || DEFAULT_GGUF="$(ls "$PI_OPS_HOME"/models/*.gguf | head -1)"
 DEFAULT_ID="$(basename "$DEFAULT_GGUF" .gguf)"
 

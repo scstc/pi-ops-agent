@@ -5,6 +5,8 @@
 # 输出语言:终端为 UTF-8 时用中文,否则自动切 ASCII 英文(客户现场终端编码不定)
 set -uo pipefail
 FAIL=0; WARN=0
+CHECK_ROOT="$(cd "$(dirname "$0")" && pwd)"
+CHECK_MODEL="$(tr -d '\r\n' < "$CHECK_ROOT/bundle/default-model.txt" 2>/dev/null || true)"
 
 IS_UTF8=0
 case "${LC_ALL:-${LANG:-}}" in *UTF-8*|*utf8*|*UTF8*) IS_UTF8=1 ;; esac
@@ -84,6 +86,9 @@ done
 MEM="$(free -m 2>/dev/null | awk '/^Mem:/{print $2}')"
 if [ "${MEM:-0}" -ge 8000 ]; then line "$L_MEM" "$S_OK ${MEM}MB $M_MEM_OK"
 elif [ "${MEM:-0}" -ge 4500 ]; then line "$L_MEM" "~ ${MEM}MB $M_MEM_MID"
+elif [ "$CHECK_MODEL" = "qwen3.5-0.8b" ]; then
+  line "$L_MEM" "$S_WR ${MEM:-0}MB (0.8b: minimum not benchmarked; install smoke test will verify)"
+  WARN=1
 else line "$L_MEM" "$S_BAD ${MEM}MB $M_MEM_NG"; FAIL=1; fi
 DISK="$(df -m / 2>/dev/null | awk 'NR==2{print $4}')"
 if [ "${DISK:-0}" -ge 5000 ]; then line "$L_DISK" "$S_OK ${DISK}MB"

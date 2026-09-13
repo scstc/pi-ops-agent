@@ -3,24 +3,32 @@
 # 与 fetch-bundle.sh(联网机本地备货,国内镜像源)的区别:
 #   - llama.cpp 源码编译 → 产物天然匹配当前容器/发行版的 glibc(规避预编译包门槛漂移)
 #   - 下载走官方源(GH runner 在海外)
-#   - 只打默认 2b 模型,控制产物体积;打完在同一容器内跑 install.sh 冒烟
+#   - 每次只打 CI 指定的一个模型,控制产物体积;打完在同一容器内跑 install.sh 冒烟
 #      (容器无 systemd → 自动走 nohup 兜底分支,顺带覆盖该路径)
 #
 # 环境变量:LLAMA_TAG(默认 b10901)、NODE_VER(默认 22.20.0)、PI_OPS_VERSION(包版本)、
-#          DISTRO_SLUG(必填,如 ubuntu-22.04)、GGUF_URL(必填)、GGUF_CACHE(可选,命中免下载)
+#          DISTRO_SLUG(必填,如 ubuntu-22.04)、BUNDLE_MODEL_ID(必填,如 qwen3.5-2b)、
+#          GGUF_URL(必填)、GGUF_CACHE(可选,命中免下载)
 set -euo pipefail
 
 : "${LLAMA_TAG:=b10901}"
 : "${NODE_VER:=22.20.0}"
 : "${DISTRO_SLUG:?需要 DISTRO_SLUG(如 ubuntu-22.04)}"
+: "${BUNDLE_MODEL_ID:?需要 BUNDLE_MODEL_ID(如 qwen3.5-2b)}"
 : "${GGUF_URL:?需要 GGUF_URL}"
 PI_PKG="@earendil-works/pi-coding-agent"
+case "$BUNDLE_MODEL_ID" in
+  *[!A-Za-z0-9._-]*|'') echo "[ci] 失败:非法 BUNDLE_MODEL_ID:$BUNDLE_MODEL_ID" >&2; exit 1 ;;
+esac
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 W="$ROOT/.ci-work"
-BUNDLE="$ROOT/bundle"
 DIST="$ROOT/dist"
-rm -rf "$W" "$DIST" && mkdir -p "$W" "$DIST" "$BUNDLE"
+# bundle 必须是本次构建专属的干净目录:同一工作目录内不同模型不能混装。
+# 不使用仓库根目录的 bundle/，避免 CI 脚本误删人工备货的离线素材。
+rm -rf "$W" "$DIST" && mkdir -p "$W" "$DIST"
+BUNDLE="$W/bundle"
+mkdir -p "$BUNDLE"
 
 log() { printf '\033[1;34m[ci]\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31m[ci] 失败:\033[0m %s\n' "$*" >&2; exit 1; }
@@ -96,18 +104,20 @@ node -e 'console.log("pi", require(process.argv[1]+"/package.json").version)' \
 tar -czf "$BUNDLE/pi-bundle.tar.gz.part" -C "$W/stage" node_modules package.json package-lock.json
 mv "$BUNDLE/pi-bundle.tar.gz.part" "$BUNDLE/pi-bundle.tar.gz"
 
-# ---------- 4. 模型 GGUF(默认只打 2b;GGUF_CACHE 命中则免下载) ----------
+# ---------- 4. 模型 GGUF(每包只含 BUNDLE_MODEL_ID;GGUF_CACHE 命中则免下载) ----------
+MODEL_GGUF="$BUNDLE/$BUNDLE_MODEL_ID.gguf"
 if [ -n "${GGUF_CACHE:-}" ] && [ -f "$GGUF_CACHE" ]; then
   log "使用缓存模型 $(basename "$GGUF_CACHE")"
-  cp "$GGUF_CACHE" "$BUNDLE/qwen3.5-2b.gguf"
+  cp "$GGUF_CACHE" "$MODEL_GGUF"
 else
-  log "下载模型(约 1.4GB)…"
-  fetch "$GGUF_URL" "$BUNDLE/qwen3.5-2b.gguf"
+  log "下载模型:$BUNDLE_MODEL_ID …"
+  fetch "$GGUF_URL" "$MODEL_GGUF"
   if [ -n "${GGUF_CACHE:-}" ]; then
     mkdir -p "$(dirname "$GGUF_CACHE")"
-    cp "$BUNDLE/qwen3.5-2b.gguf" "$GGUF_CACHE"
+    cp "$MODEL_GGUF" "$GGUF_CACHE"
   fi
 fi
+printf '%s\n' "$BUNDLE_MODEL_ID" > "$BUNDLE/default-model.txt"
 
 # ---------- 5. MANIFEST ----------
 ( cd "$BUNDLE" \
@@ -116,14 +126,53 @@ fi
 
 # ---------- 6. 外层交付包(仓库脚本 + assets + bundle) ----------
 VER="${PI_OPS_VERSION:-dev}"
-OUT="$DIST/pi-ops-agent-$VER-$DISTRO_SLUG-x64.tar.gz"
-tar -czf "$OUT" -C "$ROOT" install.sh uninstall.sh env-check.sh assets README.md LICENSE bundle
+OUT="$DIST/pi-ops-agent-$VER-$DISTRO_SLUG-$BUNDLE_MODEL_ID-x64.tar.gz"
+tar -czf "$OUT" -C "$ROOT" install.sh uninstall.sh env-check.sh assets README.md LICENSE -C "$W" bundle
 ( cd "$DIST" && sha256sum "$(basename "$OUT")" > "$(basename "$OUT").sha256" )
+
+# 自解压交付包:仅依赖目标机已有的 bash / tar / mktemp,解压后复用原安装器与其 MANIFEST 校验。
+# 安装器退出(成功或失败)后由 trap 清理临时目录,不留下模型或脚本副本。
+RUN="$DIST/pi-ops-agent-$VER-$DISTRO_SLUG-$BUNDLE_MODEL_ID-x64.run"
+cat > "$RUN.part" <<'EOF'
+#!/usr/bin/env bash
+# pi-ops-agent self-extracting installer. Payload is the matching tar.gz package.
+set -euo pipefail
+
+payload_line="$(awk '/^__PI_OPS_PAYLOAD_BELOW__$/{print NR + 1; exit}' "$0")"
+[ -n "$payload_line" ] || { echo "[pi-ops] invalid self-extracting package" >&2; exit 1; }
+command -v mktemp >/dev/null 2>&1 || { echo "[pi-ops] mktemp is required" >&2; exit 1; }
+command -v tar >/dev/null 2>&1 || { echo "[pi-ops] tar is required" >&2; exit 1; }
+
+tmpdir="$(mktemp -d "${TMPDIR:-$HOME}/.pi-ops-install.XXXXXX")"
+cleanup() { rm -rf "$tmpdir"; }
+trap cleanup EXIT INT TERM
+
+tail -n +"$payload_line" "$0" | tar -xzf - -C "$tmpdir"
+(
+  cd "$tmpdir"
+  set +e
+  ./env-check.sh
+  env_check_status=$?
+  set -e
+  case "$env_check_status" in
+    0) ;;
+    2) echo "[pi-ops] environment check has optional warnings; continuing" >&2 ;;
+    *) exit "$env_check_status" ;;
+  esac
+  ./install.sh "$@"
+)
+exit 0
+__PI_OPS_PAYLOAD_BELOW__
+EOF
+cat "$OUT" >> "$RUN.part"
+mv "$RUN.part" "$RUN"
+chmod 755 "$RUN"
+( cd "$DIST" && sha256sum "$(basename "$RUN")" > "$(basename "$RUN").sha256" )
 log "交付包:$(ls -lh "$DIST" | awk 'NR>1{print $9, $5}' | tr '\n' ' ')"
 
 # ---------- 7. 同容器冒烟(无 systemd → 走 nohup 兜底;2 vCPU 上推理慢,放宽超时) ----------
 log "冒烟:install.sh 全流程(容器内)…"
 export PI_OPS_HOME="$W/smoke-home"
 export PI_SMOKE_TIMEOUT="${PI_SMOKE_TIMEOUT:-480}"
-cd "$ROOT" && ./install.sh
+bash "$RUN"
 log "冒烟通过 ✓"

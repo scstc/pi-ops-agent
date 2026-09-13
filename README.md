@@ -7,7 +7,7 @@
 - **安全**:危险命令审批门(headless 默认拒)+ 敏感路径写入门 + 本机 api-key
 - **开箱即用**:装完自动配好一切,`pi-ops` 直接用;另附部署验证(`pi-ops-verify`)、环境自检、卸载
 
-> **版本号规范:`年份.季度.发布序号`**(当前 **v26.3.4** = 2026 Q3 第 4 个发布)。打 `v*` tag 触发 CI 构建双档离线包并自动挂 [GitHub Release](https://github.com/scstc/pi-ops-agent/releases)。
+> **版本号规范:`年份.季度.发布序号`**(当前 **v26.3.9** = 2026 Q3 第 9 个发布)。打 `v*` tag 触发 CI 构建“目标发行版 × 模型”离线包并自动挂 [GitHub Release](https://github.com/scstc/pi-ops-agent/releases)。
 
 ## 目标环境与兼容性
 
@@ -29,14 +29,22 @@
 ### 路径 A:直接用 Release 离线包(推荐,交付现场)
 
 ```bash
-# 联网机下载(或浏览器到 Releases 页)
-gh release download v26.3.4 -R scstc/pi-ops-agent -p "pi-ops-agent-v26.3.4-kylin-v10-x64.tar.gz*"
-# 拷到内网服务器(U盘/scp),然后:
-tar xzf pi-ops-agent-v26.3.4-kylin-v10-x64.tar.gz -C pi-ops
+# 联网机下载(或浏览器到 Releases 页),拷到内网服务器(U盘/scp)
+gh release download v26.3.9 -R scstc/pi-ops-agent -p "pi-ops-agent-v26.3.9-kylin-v10-qwen3.5-2b-x64.run*"
+
+# 内网服务器一键安装(无需 root / 网络;自动解压、环境自检、安装并清理临时目录)
+bash pi-ops-agent-v26.3.9-kylin-v10-qwen3.5-2b-x64.run
+pi-ops
+```
+
+如需先做环境自检，或现场策略不允许执行自解压脚本，可用同名 `.tar.gz` 手工路径：
+
+```bash
+mkdir -p pi-ops
+tar xzf pi-ops-agent-v26.3.9-kylin-v10-qwen3.5-2b-x64.tar.gz -C pi-ops
 cd pi-ops
-bash env-check.sh     # ① 前置自检:OS/架构/glibc/基件/内存磁盘/端口,零依赖单文件
-./install.sh          # ② 依次检测,缺什么离线装什么;自动配置、起服务、四重冒烟
-pi-ops                # ③ 装完即用
+bash env-check.sh
+./install.sh
 ```
 
 ### 路径 B:源码备货(国内网络,联网 Linux 机)
@@ -46,11 +54,13 @@ pi-ops                # ③ 装完即用
 # 之后同样拷整个目录进内网,env-check → install
 ```
 
-> 两条路径产物结构一致,`install.sh` 通吃;差异是 llama.cpp 来源(CI 源码编译 vs 官方预编译)与模型档(Release 包默认只带 2b,fetch-bundle 可选 4b)。
+> 每个 Release 包只带一个模型,文件名明确标识 `qwen3.5-2b` 或 `qwen3.5-0.8b`,并提供匹配的 `.tar.gz` 与一键 `.run`。`.run` 解出的原始包仍由 `bundle/MANIFEST.sha256` 校验;安装器按包内 `bundle/default-model.txt` 选择默认模型。因此从 2B 重装 0.8B 后会自动切到 0.8B。源码备货默认 2B、可选附带 4B。
 
 ### 安装器行为(零手动配置的来源)
 
-检测顺序(每步:系统已有且版本满足 → 复用,否则从 bundle/ 离线装):**Node ≥22.19**(私有目录,不碰系统 node)→ **llama-server** → **GGUF 模型**(默认 qwen3.5-2b)→ **pi**(自包含 bundle)。随后自动写 `~/.pi/agent/` 配置(provider 指向 `127.0.0.1:8787`、默认模型、SYSTEM.md 运维提示词、审批门扩展),起服务(systemd `--user` + linger,不可用则 nohup 兜底),跑四重冒烟(chat+api-key / pi 端到端 / **审批门实测拦截危险删除** / GGUF magic)。
+0.8B 包的最低内存尚未实测，内存低于 2B 门槛时预检会告警并继续，由安装冒烟验证是否可用。自解压默认使用用户家目录临时空间，可用 `TMPDIR` 指定解压位置；解压期间需额外容纳一份包内文件。
+
+检测顺序(每步:系统已有且版本满足 → 复用,否则从 bundle/ 离线装):**Node ≥22.19**(私有目录,不碰系统 node)→ **llama-server** → **GGUF 模型**(按包内 `default-model.txt` 选择默认项；旧包兼容 qwen3.5-2b 优先)→ **pi**(自包含 bundle)。随后自动写 `~/.pi/agent/` 配置(provider 指向 `127.0.0.1:8787`、默认模型、SYSTEM.md 运维提示词、审批门扩展),起服务(systemd `--user` + linger,不可用则 nohup 兜底),跑四重冒烟(chat+api-key / pi 端到端 / **审批门实测拦截危险删除** / GGUF magic)。
 
 ### 卸载
 
@@ -119,6 +129,7 @@ pi 没有任何内置审批弹窗——bash 以运行用户权限直接执行。
 
 | 档位 | 打包体积 | 常驻内存 | 角色 |
 |---|---|---|---|
+| qwen3.5-0.8b | 小于 2B 档 | 更低 | 低内存问答、轻量巡检；工具调用与复杂归因能力较弱 |
 | **qwen3.5-2b(默认)** | 1.4G(bartowski Q4_K_M) | **3.2G** 实测 | 资源受限场景的主档 |
 | qwen3.5-4b(备选) | 3.0G | ~5G 实测 | 答案深度更扎实,12G+ 内存推荐 |
 | Qwen3-30B-A3B 类 MoE | ~19G | 24-32G | 后续升级位(MoE 每 token 仅激活 3.3B,CPU 也快) |
@@ -129,15 +140,15 @@ pi 没有任何内置审批弹窗——bash 以运行用户权限直接执行。
 
 ## CI 与发布(GitHub Actions)
 
-`.github/workflows/build-bundles.yml`:push main / 打 `v*` tag / 手动触发 → 双档并行:
+`.github/workflows/build-bundles.yml`:push main / 打 `v*` tag / 手动触发 → “目标档 × 模型档”并行:
 
 | 目标档 | 构建基座 | 兼容 |
 |---|---|---|
 | `ubuntu-22.04` | ubuntu:22.04 | Ubuntu 22.04/24.04(需 20.04 则基座替换) |
 | `kylin-v10` | rockylinux:8(麒麟无公开容器镜像,用同为 RHEL8 血统 glibc 2.28 的基座) | **麒麟 V10**、RHEL/CentOS 8 系、统信 UOS 服务器版 |
 
-- 目标容器内**源码编译 llama.cpp**(钉 `LLAMA_TAG`;静态 C++ 运行库 + 多 CPU 后端 + `ldd` 自检 fail-loud),组装含 2b 的完整离线包(~1.4G),同容器跑 `install.sh` 全流程冒烟(顺带覆盖 nohup 兜底路径)
-- 产物:artifact `bundle-<distro>`(7 天)+ `v*` tag 自动挂 Release(含 sha256)
+- 每个组合分别构建 `qwen3.5-2b` 与 `qwen3.5-0.8b`(bartowski Q4_K_M GGUF),目标容器内**源码编译 llama.cpp**(钉 `LLAMA_TAG`;静态 C++ 运行库 + 多 CPU 后端 + `ldd` 自检 fail-loud),同容器跑 `install.sh` 全流程冒烟(顺带覆盖 nohup 兜底路径)
+- 产物:artifact `bundle-<distro>-<model>`(7 天)+ `v*` tag 自动挂 Release(含 sha256);每个组合提供 `.tar.gz` 与自解压 `.run`,包名为 `pi-ops-agent-<version>-<distro>-<model>-x64.{tar.gz,run}`。`.run` 使用 `mktemp` 解压，执行同包 `env-check.sh`（硬性不满足时停止、可选项告警继续）与 `install.sh` 后自动清理临时目录。
 - 技术栈:pi(`@earendil-works/pi-coding-agent`,MIT;⚠️ 旧 `@mariozechner` scope 已废弃)/ llama.cpp / node 22(自带,不碰系统)
 
 ## 已知限制

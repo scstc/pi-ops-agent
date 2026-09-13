@@ -99,6 +99,7 @@ hf_model bartowski/Qwen_Qwen3.5-2B-GGUF  Qwen_Qwen3.5-2B-Q4_K_M.gguf qwen3.5-2b.
 if [ "${1:-}" != "--skip-4b" ]; then
   hf_model bartowski/Qwen_Qwen3.5-4B-GGUF Qwen_Qwen3.5-4B-Q4_K_M.gguf qwen3.5-4b.gguf
 fi
+printf '%s\n' qwen3.5-2b > "$BUNDLE/default-model.txt"
 
 # ---------- 5. 校验清单 ----------
 ( cd "$BUNDLE" \
