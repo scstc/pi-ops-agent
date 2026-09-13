@@ -17,8 +17,22 @@ concurrency:
 env:
   LLAMA_TAG: b10901          # llama.cpp 源码编译的钉版 tag,升级时改这里
   NODE_VER: '22.20.0'        # ≥22.19(pi 的硬要求);rocky8(glibc 2.28)是官方 Node 22 下限
+  PI_VER: '0.85.1'          # 与已验证的 v26.3.9 保持一致，禁止打包时随 latest 漂移
 jobs:
+  test:
+    name: packaging regression tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 校验打包及损坏包回归测试
+        run: |
+          for script in install.sh env-check.sh fetch-bundle.sh scripts/*.sh; do bash -n "$script"; done
+          bash -n assets/bin/pi-ops-verify
+          python3 tests/test-packaging.py
+          python3 tests/test-verify-package.py
+
   build:
+    needs: test
     name: bundle / ${{ matrix.target.slug }} / ${{ matrix.model.id }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -57,7 +71,7 @@ jobs:
           path: .ci-gguf-cache/${{ matrix.model.id }}.gguf
           key: ${{ matrix.model.cache_key }}
 
-      - name: 构建离线包并冒烟
+      - name: 构建离线包
         run: scripts/ci-build.sh
         env:
           DISTRO_SLUG: ${{ matrix.target.slug }}
@@ -73,14 +87,55 @@ jobs:
           path: dist/*
           if-no-files-found: error
           retention-days: 7
+      - name: 保存完整编译诊断
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-${{ matrix.target.slug }}-${{ matrix.model.id }}
+          path: .ci-work/llama-build.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+  verify:
+    name: clean install / ${{ matrix.target.slug }} / ${{ matrix.model }}
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - { slug: kylin-v10, image: 'rockylinux:8' }
+          # 启用 Ubuntu 构建时，此处同时启用相同运行时目标。
+          # - { slug: ubuntu-22.04, image: 'ubuntu:22.04' }
+        model: [qwen3.5-2b, qwen3.5-0.8b]
+    container:
+      image: ${{ matrix.target.image }}
+    steps:
+      - name: 仅安装运行时基件及验收工具
+        run: |
+          if command -v apt-get >/dev/null 2>&1; then
+            apt-get update -qq
+            apt-get install -y -qq git ca-certificates curl xz-utils gzip procps python3 passwd util-linux
+          else
+            dnf install -y -q git ca-certificates curl bash tar gzip xz coreutils findutils gawk grep sed procps-ng python3 shadow-utils util-linux
+          fi
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: bundle-${{ matrix.target.slug }}-${{ matrix.model }}
+          path: downloaded
+      - name: 检查真实产物并用普通用户离线安装
+        run: bash scripts/ci-verify.sh downloaded '${{ matrix.model }}'
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    needs: [build, verify]
     runs-on: ubuntu-latest
     permissions:
       contents: write   # 创建 Release/上传资产需要写权限(默认 GITHUB_TOKEN 只读,403)
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: dist
@@ -90,3 +145,16 @@ jobs:
         with:
           files: dist/*
           generate_release_notes: true
+          draft: true
+      - name: 重新下载发布文件验证字节及包结构
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --dir published
+          (cd published && sha256sum -c *.sha256)
+          for model in qwen3.5-2b qwen3.5-0.8b; do
+            for extension in run tar.gz; do
+              python3 scripts/verify-package.py --model "$model" published/pi-ops-agent-"$GITHUB_REF_NAME"-kylin-v10-"$model"-x64."$extension"
+            done
+          done
+          gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false --latest

@@ -30,7 +30,7 @@ if [ "$IS_UTF8" = 1 ]; then
   M_SUM_WARN="结论:~ 满足(有可选项告警)"
   M_SUM_FAIL="结论:✗ 存在不满足项,见上(✗ 行)"
   L_OS="OS"; L_ARCH="架构"; L_GLIBC="glibc"; L_CXX="libstdc++(信息)"
-  L_CMD="命令"; L_CMD_OPT="命令(可选)"; L_MEM="内存"; L_DISK="磁盘(/ 可用)"
+  L_CMD="命令"; L_CMD_OPT="命令(可选)"; L_MEM="内存"; L_DISK="磁盘(安装目录可用)"
   L_CPU="CPU 核数"; L_PORT="端口 8787"; L_INFERENCE="(推理速度随核数)"
 else
   S_OK="OK"; S_BAD="FAIL"; S_WR="WARN"
@@ -48,7 +48,7 @@ else
   M_SUM_WARN="Conclusion: PASS (with optional warnings)"
   M_SUM_FAIL="Conclusion: FAIL - see FAIL lines above"
   L_OS="OS"; L_ARCH="Arch"; L_GLIBC="glibc"; L_CXX="libstdc++ (info)"
-  L_CMD="Cmd"; L_CMD_OPT="Cmd (opt)"; L_MEM="Memory"; L_DISK="Disk (/ free)"
+  L_CMD="Cmd"; L_CMD_OPT="Cmd (opt)"; L_MEM="Memory"; L_DISK="Disk (install dir free)"
   L_CPU="CPU cores"; L_PORT="Port 8787"; L_INFERENCE="(inference scales with cores)"
 fi
 line() { printf '%-24s %s\n' "$1" "$2"; }
@@ -84,13 +84,20 @@ done
 
 # ---- 资源(2b 档:内存 ≥4.5G 硬性/8G 舒适;磁盘 ≥5G)----
 MEM="$(free -m 2>/dev/null | awk '/^Mem:/{print $2}')"
-if [ "${MEM:-0}" -ge 8000 ]; then line "$L_MEM" "$S_OK ${MEM}MB $M_MEM_OK"
+if ! command -v free >/dev/null 2>&1; then
+  line "$L_MEM" "$S_WR unknown (free/procps unavailable; install smoke test will verify)"
+  WARN=1
+elif [ "${MEM:-0}" -ge 8000 ]; then line "$L_MEM" "$S_OK ${MEM}MB $M_MEM_OK"
 elif [ "${MEM:-0}" -ge 4500 ]; then line "$L_MEM" "~ ${MEM}MB $M_MEM_MID"
 elif [ "$CHECK_MODEL" = "qwen3.5-0.8b" ]; then
   line "$L_MEM" "$S_WR ${MEM:-0}MB (0.8b: minimum not benchmarked; install smoke test will verify)"
   WARN=1
 else line "$L_MEM" "$S_BAD ${MEM}MB $M_MEM_NG"; FAIL=1; fi
-DISK="$(df -m / 2>/dev/null | awk 'NR==2{print $4}')"
+CHECK_DISK_DIR="${PI_OPS_HOME:-$HOME/pi-ops-agent}"
+while [ ! -d "$CHECK_DISK_DIR" ] && [ "$CHECK_DISK_DIR" != / ]; do
+  CHECK_DISK_DIR="$(dirname "$CHECK_DISK_DIR")"
+done
+DISK="$(df -Pm "$CHECK_DISK_DIR" 2>/dev/null | awk 'NR==2{print $4}')"
 if [ "${DISK:-0}" -ge 5000 ]; then line "$L_DISK" "$S_OK ${DISK}MB"
 else line "$L_DISK" "$S_BAD ${DISK}MB $M_DISK_NG"; FAIL=1; fi
 line "$L_CPU" "$(nproc 2>/dev/null || echo '?') $L_INFERENCE"

@@ -13,6 +13,7 @@ set -euo pipefail
 
 : "${LLAMA_TAG:=b10901}"
 : "${NODE_VER:=22.20.0}"
+: "${PI_VER:=0.85.1}"
 : "${DISTRO_SLUG:?需要 DISTRO_SLUG(如 ubuntu-22.04)}"
 : "${BUNDLE_MODEL_ID:?需要 BUNDLE_MODEL_ID(如 qwen3.5-2b)}"
 : "${GGUF_URL:?需要 GGUF_URL}"
@@ -74,7 +75,11 @@ if [ ! -x "$W/llama.cpp/build/bin/llama-server" ]; then
     -DCMAKE_SHARED_LINKER_FLAGS="$STATIC_CPP" \
     -DGGML_NATIVE=OFF -DGGML_CPU_ALL_VARIANTS=ON -DGGML_BACKEND_DL=ON \
     -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_CURL=OFF >/dev/null
-  cmake --build "$W/llama.cpp/build" -j"$(nproc)" >/dev/null
+  if ! cmake --build "$W/llama.cpp/build" -j"$(nproc)" >"$W/llama-build.log" 2>&1; then
+    tail -n 120 "$W/llama-build.log" >&2
+    die "llama.cpp 编译失败(完整日志见 build-log artifact)"
+  fi
+  log "llama.cpp 编译完成,警告数:$(grep -c 'warning:' "$W/llama-build.log" || true)(完整日志见 build-log artifact)"
 fi
 [ -x "$W/llama.cpp/build/bin/llama-server" ] || die "llama-server 编译失败"
 # fail loud:kylin 档若仍动态依赖 libstdc++,目标机(麒麟 V10 仅 GLIBCXX_3.4.24)必挂
@@ -85,6 +90,17 @@ if [ -d /opt/rh/gcc-toolset-12 ]; then
   log "静态链接自检通过(无 libstdc++ 动态依赖)"
 fi
 LLAMA_TAR="$BUNDLE/llama-$LLAMA_TAG-src-$DISTRO_SLUG-x64.tar.gz"
+# CPU 动态后端也可能依赖 C++/OpenMP，不能只检查 llama-server 本体。
+for binary in "$W/llama.cpp/build/bin/llama-server" "$W/llama.cpp/build/bin/"*.so; do
+  dependencies="$(LD_LIBRARY_PATH="$W/llama.cpp/build/bin${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" ldd "$binary")"
+  printf '%s\n' "$dependencies" | grep -q 'not found' && die "缺失运行库:$binary"
+  for library in libgomp.so.1 libstdc++.so.6 libgcc_s.so.1; do
+    location="$(printf '%s\n' "$dependencies" | awk -v library="$library" '$1 == library && $2 == "=>" {print $3}')"
+    if [ -n "$location" ] && [ "$(readlink -f "$location")" != "$(readlink -f "$W/llama.cpp/build/bin/$library")" ]; then
+      cp -L "$location" "$W/llama.cpp/build/bin/$library"
+    fi
+  done
+done
 tar -czf "$LLAMA_TAR.part" -C "$W/llama.cpp/build/bin" .
 mv "$LLAMA_TAR.part" "$LLAMA_TAR"
 log "llama.cpp 打包:$(basename "$LLAMA_TAR")"
@@ -92,13 +108,22 @@ log "llama.cpp 打包:$(basename "$LLAMA_TAR")"
 # ---------- 3. node + pi(官方源;node 自举 npm) ----------
 NODE_TAR="$BUNDLE/node-v$NODE_VER-linux-x64.tar.xz"
 [ -f "$NODE_TAR" ] || fetch "https://nodejs.org/dist/v$NODE_VER/node-v$NODE_VER-linux-x64.tar.xz" "$NODE_TAR"
-rm -rf "$W/node" && mkdir -p "$W/node" "$W/stage"
-tar -xJf "$NODE_TAR" -C "$W/node" --strip-components=1
-export PATH="$W/node/bin:$PATH"
+NODE_STAGE="$W/node-v$NODE_VER-linux-x64"
+mkdir -p "$NODE_STAGE/lib" "$W/stage"
+tar -xJf "$NODE_TAR" -C "$NODE_STAGE" --strip-components=1
+for library in libstdc++.so.6 libgcc_s.so.1; do
+  location="$(ldd "$NODE_STAGE/bin/node" | awk -v library="$library" '$1 == library && $2 == "=>" {print $3}')"
+  [ -f "$location" ] || die "无法备齐 Node 运行库:$library"
+  cp -L "$location" "$NODE_STAGE/lib/$library"
+done
+tar -cJf "$NODE_TAR.part" -C "$W" "$(basename "$NODE_STAGE")"
+mv "$NODE_TAR.part" "$NODE_TAR"
+export PATH="$NODE_STAGE/bin:$PATH"
+export LD_LIBRARY_PATH="$NODE_STAGE/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 log "node $(node -v)"
 ( cd "$W/stage" \
   && npm init -y >/dev/null \
-  && npm install --omit=dev --no-audit --no-fund --ignore-scripts "$PI_PKG@latest" )
+  && npm install --omit=dev --no-audit --no-fund --ignore-scripts "$PI_PKG@$PI_VER" )
 node -e 'console.log("pi", require(process.argv[1]+"/package.json").version)' \
   "$W/stage/node_modules/$PI_PKG" | tee "$BUNDLE/pi-version.txt"
 tar -czf "$BUNDLE/pi-bundle.tar.gz.part" -C "$W/stage" node_modules package.json package-lock.json
@@ -142,12 +167,20 @@ payload_line="$(awk '/^__PI_OPS_PAYLOAD_BELOW__$/{print NR + 1; exit}' "$0")"
 [ -n "$payload_line" ] || { echo "[pi-ops] invalid self-extracting package" >&2; exit 1; }
 command -v mktemp >/dev/null 2>&1 || { echo "[pi-ops] mktemp is required" >&2; exit 1; }
 command -v tar >/dev/null 2>&1 || { echo "[pi-ops] tar is required" >&2; exit 1; }
+payload_sha256='__PI_OPS_PAYLOAD_SHA256__'
+actual_sha256="$(tail -n +"$payload_line" "$0" | sha256sum | awk '{print $1}')"
+[ "$actual_sha256" = "$payload_sha256" ] || { echo "[pi-ops] package checksum failed; copy/download the complete installer again" >&2; exit 1; }
 
 tmpdir="$(mktemp -d "${TMPDIR:-$HOME}/.pi-ops-install.XXXXXX")"
 cleanup() { rm -rf "$tmpdir"; }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
-tail -n +"$payload_line" "$0" | tar -xzf - -C "$tmpdir"
+if ! tail -n +"$payload_line" "$0" | tar -xzf - -C "$tmpdir"; then
+  echo "[pi-ops] extraction failed; check free space in ${TMPDIR:-$HOME}" >&2
+  exit 1
+fi
 (
   cd "$tmpdir"
   set +e
@@ -164,15 +197,11 @@ tail -n +"$payload_line" "$0" | tar -xzf - -C "$tmpdir"
 exit 0
 __PI_OPS_PAYLOAD_BELOW__
 EOF
+sed -i "s/__PI_OPS_PAYLOAD_SHA256__/$(sha256sum "$OUT" | awk '{print $1}')/" "$RUN.part"
 cat "$OUT" >> "$RUN.part"
 mv "$RUN.part" "$RUN"
 chmod 755 "$RUN"
 ( cd "$DIST" && sha256sum "$(basename "$RUN")" > "$(basename "$RUN").sha256" )
 log "交付包:$(ls -lh "$DIST" | awk 'NR>1{print $9, $5}' | tr '\n' ' ')"
 
-# ---------- 7. 同容器冒烟(无 systemd → 走 nohup 兜底;2 vCPU 上推理慢,放宽超时) ----------
-log "冒烟:install.sh 全流程(容器内)…"
-export PI_OPS_HOME="$W/smoke-home"
-export PI_SMOKE_TIMEOUT="${PI_SMOKE_TIMEOUT:-480}"
-bash "$RUN"
-log "冒烟通过 ✓"
+# 独立 verify job 会从上传的包开始校验，并在无构建工具链的容器中用普通用户安装。

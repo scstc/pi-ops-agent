@@ -58,6 +58,7 @@ node_ge() { # node_ge <major> <minor>
            process.exit(M>W||(M===W&&m>=w)?0:1)' "$1" "$2" 2>/dev/null
 }
 NODE_BIN_DIR=""
+NODE_LIB_DIR=""
 if node_ge 22 19; then
   log "检测到系统 node $(node -v)(≥22.19),复用" "system node $(node -v) (>=22.19) found, reuse"
 else
@@ -69,6 +70,10 @@ else
   tar -xJf "$NODE_TAR" -C "$PI_OPS_HOME/node" --strip-components=1
   NODE_BIN_DIR="$PI_OPS_HOME/node/bin"
   export PATH="$NODE_BIN_DIR:$PATH"
+  if [ -d "$PI_OPS_HOME/node/lib" ]; then
+    NODE_LIB_DIR="$PI_OPS_HOME/node/lib"
+    export LD_LIBRARY_PATH="$NODE_LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+  fi
   node_ge 22 19 || die "离线安装的 node 异常" "offline-installed node is broken"
 fi
 NODE="$(command -v node)"
@@ -102,13 +107,10 @@ for g in "$BUNDLE"/*.gguf; do
   gguf_ok "$g" || die "模型文件损坏(非 GGUF 格式,可能传输截断):$base" \
                       "model file corrupted (not GGUF, likely truncated transfer): $base"
   dst="$PI_OPS_HOME/models/$base"
-  if [ -f "$dst" ] && [ "$(stat -c%s "$g")" = "$(stat -c%s "$dst")" ]; then
+  if [ -f "$dst" ] && [ "$(sha256sum "$g" | awk '{print $1}')" = "$(sha256sum "$dst" | awk '{print $1}')" ]; then
     log "模型 $base 已存在,跳过" "model $base already present, skip"
-  elif [ -f "$dst" ] && [ "$(stat -c%s "$g")" -lt "$(stat -c%s "$dst")" ]; then
-    warn "模型 $base 比 $PI_OPS_HOME/models/ 中已有的小,疑似截断/旧版,跳过覆盖" \
-         "model $base smaller than installed one, suspected truncation/older, skip overwrite"
   else
-    [ -f "$dst" ] && log "模型 $base 与已装版本不同且更大,覆盖(升级)" "model $base differs and is larger, overwrite (upgrade)" \
+    [ -f "$dst" ] && log "模型 $base 与包内内容不同,替换" "model $base differs from bundle, replace" \
                  || log "安装模型 $base(数 GB,拷贝需片刻)…" "installing model $base (GBs, copying) ..."
     cp "$g" "$dst"
   fi
@@ -266,12 +268,17 @@ if [ -n "$NODE_BIN_DIR" ]; then
 else
   PATHLINE=':'
 fi
+LDLINE=':'
+if [ -n "$NODE_LIB_DIR" ]; then
+  LDLINE='export LD_LIBRARY_PATH="'"$NODE_LIB_DIR"'${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"'
+fi
 cat > "$PI_OPS_HOME/bin/pi-ops" <<EOF
 #!/usr/bin/env bash
 # 由 install.sh 生成:离线模式启动 pi;模型服务按需拉起 + 空闲回收(见 bin/idle-stop.sh)
 # idle-min 配置文件:0 = pi 退出即停模型;N>0 = 空闲 N 分钟后自动停;很大 = 常驻
 export PI_OFFLINE=1 PI_TELEMETRY=0
 $PATHLINE
+$LDLINE
 HOME_DIR_="$PI_OPS_HOME"
 PORT_="$PORT"
 KEY_="\$(cat "\$HOME_DIR_/llama.key" 2>/dev/null)"

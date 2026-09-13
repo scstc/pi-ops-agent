@@ -7,7 +7,7 @@
 - **安全**:危险命令审批门(headless 默认拒)+ 敏感路径写入门 + 本机 api-key
 - **开箱即用**:装完自动配好一切,`pi-ops` 直接用;另附部署验证(`pi-ops-verify`)、环境自检、卸载
 
-> **版本号规范:`年份.季度.发布序号`**(当前 **v26.3.9** = 2026 Q3 第 9 个发布)。打 `v*` tag 触发 CI 构建“目标发行版 × 模型”离线包并自动挂 [GitHub Release](https://github.com/scstc/pi-ops-agent/releases)。
+> **版本号规范:`年份.季度.发布序号`**(当前 **v26.3.10** = 2026 Q3 第 10 个发布)。打 `v*` tag 触发 CI 构建“目标发行版 × 模型”离线包，通过独立验收后自动挂 [GitHub Release](https://github.com/scstc/pi-ops-agent/releases)。
 
 ## 目标环境与兼容性
 
@@ -30,10 +30,10 @@
 
 ```bash
 # 联网机下载(或浏览器到 Releases 页),拷到内网服务器(U盘/scp)
-gh release download v26.3.9 -R scstc/pi-ops-agent -p "pi-ops-agent-v26.3.9-kylin-v10-qwen3.5-2b-x64.run*"
+gh release download v26.3.10 -R scstc/pi-ops-agent -p "pi-ops-agent-v26.3.10-kylin-v10-qwen3.5-2b-x64.run*"
 
 # 内网服务器一键安装(无需 root / 网络;自动解压、环境自检、安装并清理临时目录)
-bash pi-ops-agent-v26.3.9-kylin-v10-qwen3.5-2b-x64.run
+bash pi-ops-agent-v26.3.10-kylin-v10-qwen3.5-2b-x64.run
 pi-ops
 ```
 
@@ -41,7 +41,7 @@ pi-ops
 
 ```bash
 mkdir -p pi-ops
-tar xzf pi-ops-agent-v26.3.9-kylin-v10-qwen3.5-2b-x64.tar.gz -C pi-ops
+tar xzf pi-ops-agent-v26.3.10-kylin-v10-qwen3.5-2b-x64.tar.gz -C pi-ops
 cd pi-ops
 bash env-check.sh
 ./install.sh
@@ -55,6 +55,8 @@ bash env-check.sh
 ```
 
 > 每个 Release 包只带一个模型,文件名明确标识 `qwen3.5-2b` 或 `qwen3.5-0.8b`,并提供匹配的 `.tar.gz` 与一键 `.run`。`.run` 解出的原始包仍由 `bundle/MANIFEST.sha256` 校验;安装器按包内 `bundle/default-model.txt` 选择默认模型。因此从 2B 重装 0.8B 后会自动切到 0.8B。源码备货默认 2B、可选附带 4B。
+
+`.run` 解压前会校验内置载荷哈希，文件损坏或下载不完整会直接停止。Release 包自带 Node 的 C++ 运行库与 llama.cpp 的 OpenMP 运行库，不需要在现场安装编译工具链。重装会按 SHA-256 比对模型内容并替换损坏文件。
 
 ### 安装器行为(零手动配置的来源)
 
@@ -147,7 +149,9 @@ pi 没有任何内置审批弹窗——bash 以运行用户权限直接执行。
 | `ubuntu-22.04` | ubuntu:22.04 | Ubuntu 22.04/24.04(需 20.04 则基座替换) |
 | `kylin-v10` | rockylinux:8(麒麟无公开容器镜像,用同为 RHEL8 血统 glibc 2.28 的基座) | **麒麟 V10**、RHEL/CentOS 8 系、统信 UOS 服务器版 |
 
-- 每个组合分别构建 `qwen3.5-2b` 与 `qwen3.5-0.8b`(bartowski Q4_K_M GGUF),目标容器内**源码编译 llama.cpp**(钉 `LLAMA_TAG`;静态 C++ 运行库 + 多 CPU 后端 + `ldd` 自检 fail-loud),同容器跑 `install.sh` 全流程冒烟(顺带覆盖 nohup 兜底路径)
+- 每个组合分别构建 `qwen3.5-2b` 与 `qwen3.5-0.8b`(bartowski Q4_K_M GGUF),目标容器内**源码编译 llama.cpp**(钉 `LLAMA_TAG`;静态 C++ 运行库 + 多 CPU 后端 + `ldd` 自检 fail-loud)。安装冒烟由独立运行时容器执行，覆盖 nohup 兜底路径。
+- 打包回归测试通过后才构建；独立的干净发行版容器下载真实 artifact，检查两种格式的包结构、MANIFEST、默认模型与内层运行库，再以普通用户和全新 HOME 安装。临时解压目录清理后还会执行冷启动，并检查启动器不依赖构建目录。
+- Release 先以草稿上传全部文件，重新下载并核对 SHA-256 与包结构，全部通过后公开发布。编译警告按数量汇总，完整诊断保留在独立 `build-log-*` artifact，实际编译错误会打印并让 CI 失败。
 - 产物:artifact `bundle-<distro>-<model>`(7 天)+ `v*` tag 自动挂 Release(含 sha256);每个组合提供 `.tar.gz` 与自解压 `.run`,包名为 `pi-ops-agent-<version>-<distro>-<model>-x64.{tar.gz,run}`。`.run` 使用 `mktemp` 解压，执行同包 `env-check.sh`（硬性不满足时停止、可选项告警继续）与 `install.sh` 后自动清理临时目录。
 - 技术栈:pi(`@earendil-works/pi-coding-agent`,MIT;⚠️ 旧 `@mariozechner` scope 已废弃)/ llama.cpp / node 22(自带,不碰系统)
 

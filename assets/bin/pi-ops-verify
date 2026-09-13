@@ -13,6 +13,9 @@ set -euo pipefail
 DOC="${1:?用法: pi-ops-verify <架构文档.md> [输出报告.md] | usage: pi-ops-verify <doc.md> [report.md]}"
 OUT="${2:-verify-report-$(date +%Y%m%d-%H%M%S).md}"
 PI_OPS_HOME="${PI_OPS_HOME:-$HOME/pi-ops-agent}"
+if [ -d "$PI_OPS_HOME/node/lib" ]; then
+  export LD_LIBRARY_PATH="$PI_OPS_HOME/node/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+fi
 
 IS_UTF8=0
 case "${LC_ALL:-${LANG:-}}" in *UTF-8*|*utf8*|*UTF8*) IS_UTF8=1 ;; esac
