@@ -33,6 +33,7 @@ jobs:
           bash -n assets/bin/pi-ops-verify
           python3 tests/test-packaging.py
           python3 tests/test-verify-package.py
+          python3 tests/test-ci-lifecycle.py
 
   build:
     needs: test
@@ -130,6 +131,16 @@ jobs:
           path: downloaded
       - name: 检查真实产物并用普通用户离线安装
         run: bash scripts/ci-verify.sh downloaded '${{ matrix.model }}'
+        env:
+          CI_DIAGNOSTICS_DIR: ${{ github.workspace }}/.ci-verify
+      - name: 保存冷启动验收诊断
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verify-log-${{ matrix.target.slug }}-${{ matrix.model }}
+          path: .ci-verify/*
+          if-no-files-found: ignore
+          retention-days: 7
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
