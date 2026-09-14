@@ -1,220 +1,220 @@
 # pi-ops-agent
 
-内网(air-gapped)离线部署运维 Agent:基于 [pi](https://pi.dev) + 本地 Qwen 小模型(llama.cpp 直跑 GGUF),打包成**免联网、不需要 root、装完零手动配置**的离线交付包,跑在无法访问互联网的内网/客户现场服务器上。
+面向内网和客户现场的离线运维 Agent。它把 Node、pi、llama.cpp 和一个本地 Qwen GGUF 模型封装为无需 root、安装期间不访问网络的交付包；安装后可在目标服务器上用自然语言查询和分析运维问题。
 
-- **真离线**:安装全程零外联(实测采样验证);自带 Node/llama.cpp/pi/模型,不用包管理器
-- **真机已验证**:麒麟 V10(信创)全新安装全绿(v26.3.4),WSL PoC 全流程
-- **安全**:危险命令审批门(headless 默认拒)+ 敏感路径写入门 + 本机 api-key
-- **开箱即用**:装完自动配好一切,`pi-ops` 直接用;另附部署验证(`pi-ops-verify`)、环境自检、卸载
+当前发行版本为 **v26.3.11**。每个 Release 资产只包含一个模型和一个目标发行版，文件名会写明二者。离线包目前面向 x86_64 的麒麟 V10 / RHEL 8 系环境。
 
-> **版本号规范:`年份.季度.发布序号`**(当前 **v26.3.11** = 2026 Q3 第 11 个发布)。打 `v*` tag 触发 CI 构建“目标发行版 × 模型”离线包，通过独立验收后自动挂 [GitHub Release](https://github.com/scstc/pi-ops-agent/releases)。
+## 适用范围
 
-## 目标环境与兼容性
+| 项目 | 要求或实测边界 |
+| --- | --- |
+| CPU / 系统 | x86_64、glibc ≥ 2.28；已在麒麟 V10、Ubuntu 22.04/24.04 与 WSL Ubuntu 验证 |
+| 基础命令 | `bash`、`tar`、`xz`、`curl`；`systemctl`、`ss`、`timeout` 缺失时会降级，不阻止安装 |
+| 2B 档内存 | 至少 4.5 GB，8 GB 较舒适；实测 llama-server 常驻约 3.2 GB、空闲 CPU 接近 0 |
+| 磁盘 | 安装目录至少 5 GB 可用空间；运行 `.run` 时临时目录还需容纳一份解压内容 |
+| 0.8B 档 | 用于内存更紧的轻量问答和巡检；最低可用内存尚未完成实测，预检会告警后继续由安装冒烟验证 |
 
-| 维度 | 要求 | 说明 |
-|---|---|---|
-| 架构 | x86_64 | 当前安装包仅 x64 |
-| glibc | **≥ 2.28** | 官方 Node 22 硬下限(兼容下限,更老的 CentOS 7 需非官方 Node) |
-| libstdc++ | **无要求** | CI 产物静态链接 C++ 运行库(v26.3.2+,信创机系统库过老也不受影响) |
-| CPU 指令集 | **无要求** | 多后端运行时分发(GGML_CPU_ALL_VARIANTS),按 CPU 自动选最优 kernel(v26.3.4+) |
-| 基础命令 | bash / tar / xz / curl | 其余全部自带;ss/systemctl 缺失仅降级不阻断 |
-| 资源(2b 档) | 内存 ≥4.5G(8G 舒适)/ 磁盘 ≥5G | 实测:llama-server 常驻 3.2G,空闲 CPU≈0;pi 按需 117MB 峰值 |
+发布包有两档模型：
 
-**已验证发行版**:麒麟 V10(Halberd/Lance)、Ubuntu 22.04/24.04、WSL Ubuntu;`kylin-v10` 档同时覆盖 RHEL/CentOS 8 系与统信 UOS 服务器版(RHEL8 血统)。
+| 模型 | 使用建议 | 已知边界 |
+| --- | --- | --- |
+| `qwen3.5-0.8b` | 资源很紧、简单问答或轻量巡检 | 工具调用与复杂归因能力较弱 |
+| `qwen3.5-2b` | 默认推荐，用于受限机器上的常规运维问答 | 多轮复杂任务的归因深度有限，可能出现小模型幻觉 |
 
-> 信创踩坑记录(glibc 之外还有两条独立兼容轴,均已修复固化):①麒麟系统 libstdc++ 只到 GLIBCXX_3.4.24 → 静态链接;②GGML_NATIVE 按 CI 机型 CPU 编译出的 kernel 含目标机没有的 AVX-512 新扩展 → SIGILL → 关 native + 多后端分发。详见 git log(v26.3.2~v26.3.4)。
+`2B`、`0.8B` 是模型参数档位，不能当作交付包大小。2B 使用的 Q4_K_M GGUF 模型文件实测约 1.4 GB；Release 包还包含 Node、pi、llama.cpp 和脚本，实际下载大小以 Release 资产显示为准。
 
-## 快速开始
+历史 WSL 纯 CPU 评测中，2B 在五个真实运维任务的两轮测试为 5/5，能定位 `docker-proxy` 和 PID，但归因较浅。仓库中的 `tests/eval-ops.sh [模型id]` 可复现评测；不要将该结果视为所有现场环境的性能承诺。
 
-### 路径 A:直接用 Release 离线包(推荐,交付现场)
+## Quick start：联网备货到离线首次问答
 
-```bash
-# 联网机下载(或浏览器到 Releases 页),拷到内网服务器(U盘/scp)
-gh release download v26.3.11 -R scstc/pi-ops-agent -p "pi-ops-agent-v26.3.11-kylin-v10-qwen3.5-2b-x64.run*"
+下面以 `kylin-v10` 的 2B 包为例。0.8B 只需把文件名中的 `qwen3.5-2b` 换成 `qwen3.5-0.8b`。
 
-# 内网服务器一键安装(无需 root / 网络;自动解压、环境自检、安装并清理临时目录)
-bash pi-ops-agent-v26.3.11-kylin-v10-qwen3.5-2b-x64.run
-pi-ops
+### 1. 在联网 Windows 机器下载并校验
+
+需要已登录 GitHub CLI 的 PowerShell。下载 `.run` 和同名校验文件，然后比较 SHA-256：
+
+```powershell
+gh release download v26.3.11 -R scstc/pi-ops-agent `
+  -p "pi-ops-agent-v26.3.11-kylin-v10-qwen3.5-2b-x64.run" `
+  -p "pi-ops-agent-v26.3.11-kylin-v10-qwen3.5-2b-x64.run.sha256"
+
+$file = "pi-ops-agent-v26.3.11-kylin-v10-qwen3.5-2b-x64.run"
+$expected = (Get-Content "$file.sha256").Split()[0].ToLower()
+$actual = (Get-FileHash $file -Algorithm SHA256).Hash.ToLower()
+if ($actual -ne $expected) { throw "SHA-256 校验失败：请重新下载 $file" }
 ```
 
-如需先做环境自检，或现场策略不允许执行自解压脚本，可用同名 `.tar.gz` 手工路径：
+也可在联网 Linux 机器使用：
 
 ```bash
-mkdir -p pi-ops
-tar xzf pi-ops-agent-v26.3.11-kylin-v10-qwen3.5-2b-x64.tar.gz -C pi-ops
-cd pi-ops
+gh release download v26.3.11 -R scstc/pi-ops-agent \
+  -p 'pi-ops-agent-v26.3.11-kylin-v10-qwen3.5-2b-x64.run' \
+  -p 'pi-ops-agent-v26.3.11-kylin-v10-qwen3.5-2b-x64.run.sha256'
+sha256sum -c pi-ops-agent-v26.3.11-kylin-v10-qwen3.5-2b-x64.run.sha256
+```
+
+把 `.run` 和同名 `.sha256` 两个文件拷贝到现场服务器，例如通过 U 盘或受控的内网文件传输。无需在现场服务器安装 GitHub CLI、Node、npm、Ollama 或编译工具。
+
+### 2. 在离线服务器安装
+
+在存放安装包的目录中再次校验，确认传输没有损坏。`PI_OPS_HOME` 指定安装目录，默认是 `~/pi-ops-agent`；需要使用其他磁盘时先设置它。`TMPDIR` 可指定自解压位置。
+
+```bash
+export PI_OPS_HOME="${PI_OPS_HOME:-$HOME/pi-ops-agent}"
+sha256sum -c pi-ops-agent-v26.3.11-kylin-v10-qwen3.5-2b-x64.run.sha256
+bash ./pi-ops-agent-v26.3.11-kylin-v10-qwen3.5-2b-x64.run
+```
+
+`.run` 会先校验内置载荷，再解压、运行 `env-check.sh` 和 `install.sh`，最后删除临时目录。安装器还会校验 `bundle/MANIFEST.sha256`、启动本地模型服务，并执行 chat、pi 端到端和危险删除拦截的冒烟测试。整个安装过程不下载依赖。
+
+首次安装后，当前 shell 的 PATH 不会自动刷新。请先使用绝对路径完成第一次问答：
+
+```bash
+"$PI_OPS_HOME/bin/pi-ops" -p "查看当前磁盘使用情况，并给出清理建议。"
+```
+
+之后新开终端即可使用 `pi-ops`。若使用 bash，也可执行 `source ~/.bashrc`；zsh 用户执行 `source ~/.zshrc`。安装器只会更新已经存在的对应 rc 文件，两个文件都不存在时才创建 `~/.bashrc`。
+
+### 3. `.tar.gz` 备用安装方式
+
+现场策略不允许执行自解压脚本时，下载匹配的 `.tar.gz` 和 `.tar.gz.sha256`，先校验再解压：
+
+```bash
+sha256sum -c pi-ops-agent-v26.3.11-kylin-v10-qwen3.5-2b-x64.tar.gz.sha256
+mkdir -p pi-ops-package
+tar -xzf pi-ops-agent-v26.3.11-kylin-v10-qwen3.5-2b-x64.tar.gz -C pi-ops-package
+cd pi-ops-package
 bash env-check.sh
+export PI_OPS_HOME="${PI_OPS_HOME:-$HOME/pi-ops-agent}"
 ./install.sh
+"$PI_OPS_HOME/bin/pi-ops" -p "你好，请介绍你的运维能力。"
 ```
 
-### 路径 B:源码备货(国内网络,联网 Linux 机)
+预检退出码 `0` 表示满足要求，`2` 表示只有可选项告警，`1` 表示存在硬性不满足项。`.run` 对退出码 `2` 会继续安装，对 `1` 会停止。
+
+## 日常使用
+
+以下维护命令使用安装目录变量。新终端中先执行 `export PI_OPS_HOME="${PI_OPS_HOME:-$HOME/pi-ops-agent}"`；自定义安装目录时把默认值换成实际路径。
 
 ```bash
-./fetch-bundle.sh        # npmmirror + github + hf-mirror 三源备齐 bundle/(附 MANIFEST)
-# 之后同样拷整个目录进内网,env-check → install
+pi-ops                                      # 交互 TUI，/quit 退出
+pi-ops -p "检查磁盘使用情况"                 # 单次问答
+pi-ops-verify 部署架构.md                    # 输出 verify-report-时间戳.md
+pi-ops-verify 部署架构.md my-report.md       # 指定报告文件
+systemctl --user status pi-ops-llama         # systemd 用户服务状态
 ```
 
-> 每个 Release 包只带一个模型,文件名明确标识 `qwen3.5-2b` 或 `qwen3.5-0.8b`,并提供匹配的 `.tar.gz` 与一键 `.run`。`.run` 解出的原始包仍由 `bundle/MANIFEST.sha256` 校验;安装器按包内 `bundle/default-model.txt` 选择默认模型。因此从 2B 重装 0.8B 后会自动切到 0.8B。源码备货默认 2B、可选附带 4B。
-
-`.run` 解压前会校验内置载荷哈希，文件损坏或下载不完整会直接停止。Release 包自带 Node 的 C++ 运行库与 llama.cpp 的 OpenMP 运行库，不需要在现场安装编译工具链。重装会按 SHA-256 比对模型内容并替换损坏文件。
-
-### 安装器行为(零手动配置的来源)
-
-0.8B 包的最低内存尚未实测，内存低于 2B 门槛时预检会告警并继续，由安装冒烟验证是否可用。自解压默认使用用户家目录临时空间，可用 `TMPDIR` 指定解压位置；解压期间需额外容纳一份包内文件。
-
-检测顺序(每步:系统已有且版本满足 → 复用,否则从 bundle/ 离线装):**Node ≥22.19**(私有目录,不碰系统 node)→ **llama-server** → **GGUF 模型**(按包内 `default-model.txt` 选择默认项；旧包兼容 qwen3.5-2b 优先)→ **pi**(自包含 bundle)。随后自动写 `~/.pi/agent/` 配置(provider 指向 `127.0.0.1:8787`、默认模型、SYSTEM.md 运维提示词、审批门扩展),起服务(systemd `--user` + linger,不可用则 nohup 兜底),跑四重冒烟(chat+api-key / pi 端到端 / **审批门实测拦截危险删除** / GGUF magic)。
-
-### 卸载
+模型服务仅监听 `127.0.0.1`，使用本地 API key。默认空闲 5 分钟会回收模型内存：
 
 ```bash
-./uninstall.sh          # 停服务清单元 → 删 ~/pi-ops-agent → pi 配置还原安装前备份 → 清 rc PATH
-                         # 保留会话历史;-y 跳过确认(真机验证过全清)
+echo 0 > "$PI_OPS_HOME/idle-min"            # pi 退出即停止模型
+echo 5 > "$PI_OPS_HOME/idle-min"            # 默认值：空闲 5 分钟回收
 ```
 
-## 指令一览
-
-| 指令 | 用途 |
-|---|---|
-| `pi-ops` | 交互 TUI;`/quit` 退出 |
-| `pi-ops -p "查一下磁盘"` | 单次问答(headless) |
-| `pi-ops --model llama-cpp/qwen3.5-4b` | 切模型(临时);改默认编辑 `~/.pi/agent/settings.json` |
-| `pi-ops-verify 部署架构.md` | 部署验证(见下节);退出码带失败数,可挂 cron 告警 |
-| `bash env-check.sh` | 部署前置自检 |
-| `./uninstall.sh [-y]` | 卸载 |
-| `systemctl --user status pi-ops-llama` | 服务管理(无 systemd 时 `~/pi-ops-agent/bin/llama-run &`) |
-| `echo 0 > ~/pi-ops-agent/idle-min` | **模型生命周期**:`0` = pi 退出即停;`5`(默认)= 空闲 5 分钟自动回收;大数值 = 常驻 |
-| `MODEL=~/pi-ops-agent/models/xx.gguf` 重启服务 | 服务端换模型(A/B 用) |
-
-临时切服务端模型:`systemctl --user set-environment MODEL=$HOME/pi-ops-agent/models/qwen3.5-4b.gguf && systemctl --user restart pi-ops-llama`(重装会自动归位默认模型)。
-
-## 总体架构
-
-```
-┌─ 内网服务器(无互联网;无 root 也可)────────────────────┐
-│ ~/pi-ops-agent/                                          │
-│   bin/llama-run    llama-server -m models/*.gguf --jinja │ 模型层(OpenAI 兼容 :8787,带 api-key)
-│   bin/pi-ops       PI_OFFLINE=1 → pi                     │ agent 层(按需进程,答完即退)
-│   node/ llama/ pi/ models/ lib/                          │ 各组件本体(全部自带)
-│ ~/.pi/agent/                                             │
-│   models.json / settings.json / SYSTEM.md                │ pi 配置(install 自动生成)
-│   extensions/pi-ops-tools.ts                             │ 审批门 + 只读运维工具
-│ 服务:systemd --user + linger(登出不死);nohup 兜底     │
-│ 模型:pi-ops 按需拉起,空闲自动回收(默认 5 分钟,       │
-│       idle-min 可调;退出即停设 0)——不占常驻内存      │
-└──────────────────────────────────────────────────────────┘
-```
-
-**不用 Ollama,llama.cpp 直接跑 GGUF**:无 daemon / 无 registry / 无版本检查,最贴离线交付形态。工具调用 `--jinja`、上下文 `-c 16384` 均在 `llama-run` 固化(避免默认 4K 截断工具 schema 的经典坑);crash 时 `LimitCORE=0` 防 core dump 砸盘。
-
-## 部署验证:pi-ops-verify(架构文档驱动)
-
-给一份部署架构文档(wiki 导出的 Markdown 即可),一条指令自动逐项核对实际部署状态并出报告:
+有 systemd 用户服务时，模型服务由 `pi-ops-llama` 管理，安装器会尝试启用 linger，使 SSH 退出后服务保留。没有可用 systemd 时会走 `nohup` 兜底；下次运行 `pi-ops` 会按需拉起模型，也可手动启动：
 
 ```bash
-pi-ops-verify 部署架构.md              # 报告存 verify-report-<时间戳>.md
-pi-ops-verify 部署架构.md my-report.md # 指定报告文件
+"$PI_OPS_HOME/bin/llama-run" &
 ```
 
-**防幻觉架构(确定性实测层)**:文档含 ` ```deploy-spec ` YAML 块时(规范见 `examples/deploy-spec-example.md`,覆盖 服务/端口/进程/单元/健康/目录/文件/版本/连通性),由 `lib/verify-check.js` 用 ss/pgrep/systemctl/curl/fs/net **确定性探测**生成"模型不可篡改"的实测表,agent 只做对照判定与汇总——小模型想编证据也没得编(实测曾抓出"模型谎称端口监听"的案例)。无 spec 块则 agent 通读全文自由理解(wiki 随手贴可用,建议配 4b)。全程只读,危险命令照被审批门拦。
+## 部署验证
 
-## 安全模型(pi 的特殊性)
-
-pi 没有任何内置审批弹窗——bash 以运行用户权限直接执行。本仓库用扩展补多层防线:
-
-- **危险命令审批门**(`assets/extensions/ops-tools.ts`,语义化判定、经对抗评审多轮绕过测试):rm 分离/合并/长旗标 r+f、关机组、块设备覆写(dd of=/tee/shred/mkfs/find -delete 等)、写 `/etc` 与 `~/.ssh`、下载即执行(curl|sh 全变形含 `| sudo bash`、`bash <(curl)`)、systemctl 只放行读动词、防火墙写操作;headless 下无法交互时**默认拒绝**。安装冒烟内置实测(诱导 rm -rf → 断言目录未删)
-- **写类工具门**:write/edit 写敏感路径(~/.ssh、systemd 用户单元、/etc、shell 配置)同样要求确认,堵"绕过 bash 直写持久化入口"
-- **llama-server api-key**:仅绑 127.0.0.1 且带 key(`~/pi-ops-agent/llama.key`,600),防本机其他进程免鉴权调用
-- **bundle 完整性**:MANIFEST sha256 校验 + 清单外文件拒绝
-- 以上均为 best-effort 纵深防御,**不是沙箱**;生产建议叠加专用低权限用户/容器隔离
-
-## 模型选型与评测
-
-| 档位 | 打包体积 | 常驻内存 | 角色 |
-|---|---|---|---|
-| qwen3.5-0.8b | 小于 2B 档 | 更低 | 低内存问答、轻量巡检；工具调用与复杂归因能力较弱 |
-| **qwen3.5-2b(默认)** | 1.4G(bartowski Q4_K_M) | **3.2G** 实测 | 资源受限场景的主档 |
-| qwen3.5-4b(备选) | 3.0G | ~5G 实测 | 答案深度更扎实,12G+ 内存推荐 |
-| Qwen3-30B-A3B 类 MoE | ~19G | 24-32G | 后续升级位(MoE 每 token 仅激活 3.3B,CPU 也快) |
-
-5 个真实运维任务 A/B(WSL 纯 CPU):**2b 干净两轮 5/5**(port8080 能定位 docker-proxy+PID,归因浅、偶有小幻觉);**4b 5/5+4/5**(容器级归因、连 llama-server 自身资源占用都观察到)。两家都有偶发超时波动(多轮长上下文受 CPU prompt 重处理制约);差异在答案深度。跑分脚本:`tests/eval-ops.sh [模型id]`。
-
-选型调研依据(2026-09,均有出处):2B 级多轮工具调用衰退明显(0.6B 单轮 84% → 5 轮 42%;3-4B 工具选择 F1 0.72-0.73 vs 8B 0.92);⚠️ 模型源必须用 bartowski 等 llama.cpp 官方转换器产出——Ollama registry 的 qwen3.5 GGUF 与加载器存在 rope 段数约定错配(`expected 4, got 3`),实测不可用。
-
-## CI 与发布(GitHub Actions)
-
-`.github/workflows/build-bundles.yml`:push main / 打 `v*` tag / 手动触发 → “目标档 × 模型档”并行:
-
-| 目标档 | 构建基座 | 兼容 |
-|---|---|---|
-| `ubuntu-22.04` | ubuntu:22.04 | Ubuntu 22.04/24.04(需 20.04 则基座替换) |
-| `kylin-v10` | rockylinux:8(麒麟无公开容器镜像,用同为 RHEL8 血统 glibc 2.28 的基座) | **麒麟 V10**、RHEL/CentOS 8 系、统信 UOS 服务器版 |
-
-- 每个组合分别构建 `qwen3.5-2b` 与 `qwen3.5-0.8b`(bartowski Q4_K_M GGUF),目标容器内**源码编译 llama.cpp**(钉 `LLAMA_TAG`;静态 C++ 运行库 + 多 CPU 后端 + `ldd` 自检 fail-loud)。安装冒烟由独立运行时容器执行，覆盖 nohup 兜底路径。
-- 打包回归测试通过后才构建；独立的干净发行版容器下载真实 artifact，检查两种格式的包结构、MANIFEST、默认模型与内层运行库，再以普通用户和全新 HOME 安装。临时解压目录清理后还会执行冷启动，并检查启动器不依赖构建目录。
-- Release 先以草稿上传全部文件，重新下载并核对 SHA-256 与包结构，全部通过后公开发布。编译警告按数量汇总，完整诊断保留在独立 `build-log-*` artifact，实际编译错误会打印并让 CI 失败。
-- 产物:artifact `bundle-<distro>-<model>`(7 天)+ `v*` tag 自动挂 Release(含 sha256);每个组合提供 `.tar.gz` 与自解压 `.run`,包名为 `pi-ops-agent-<version>-<distro>-<model>-x64.{tar.gz,run}`。`.run` 使用 `mktemp` 解压，执行同包 `env-check.sh`（硬性不满足时停止、可选项告警继续）与 `install.sh` 后自动清理临时目录。
-- 技术栈:pi(`@earendil-works/pi-coding-agent`,MIT;⚠️ 旧 `@mariozechner` scope 已废弃)/ llama.cpp / node 22(自带,不碰系统)
-
-## 已知限制
-
-### 400 exceed_context_size_error（旧安装配置修复）
-
-旧安装器在 `models.json` 声明 32768 上下文，但 `llama-run` 实际为 `-c 16384`，长会话会超出服务容量。安装器现已对齐为 16384，输出上限 4096，并配置自动压缩（预留 6144、近期保留 4096 token）。单次输入或工具输出过大仍可能超限，查询日志时应限制行数。
-
-已安装的现场机器可退出 pi 后，使用包内 Node 修改配置（无需重启模型服务）：
+`pi-ops-verify` 根据架构 Markdown 生成报告。若文档包含 `deploy-spec` YAML 代码块，会先用 `ss`、`pgrep`、`systemctl`、`curl`、文件系统和网络探测得到确定性实测结果，再让 Agent 只负责对照、汇总和给出修复建议；这比纯模型理解更可靠。
 
 ```bash
-"${PI_OPS_HOME:-$HOME/pi-ops-agent}/node/bin/node" <<'JS'
-const fs = require('fs'), path = require('path');
+pi-ops-verify /path/to/部署架构.md
+```
+
+规范和示例见 [deploy-spec-example.md](examples/deploy-spec-example.md)，将服务、端口、目录、文件、版本和连通性替换为现场实际要求即可；安装器不会把示例复制到安装目录。没有 `deploy-spec` 块时也能使用自由理解模式，但小模型的可靠性较低；复杂文档建议补全规范块。`deploy-spec` 模式中确定性实测有不符项时返回 `1`；全部符合且 Agent 正常完成时为 `0`，文档或启动器不存在时为 `2`，其他错误可能返回 Agent 或超时命令的退出码。
+
+## 16K 上下文配置与旧安装修复
+
+当前安装器已将 pi 的 `contextWindow` 固定为 16384、`maxTokens` 为 4096，并启用会话压缩（预留 6144 token，保留最近 4096 token），与 `llama-run -c 16384` 对齐。
+
+旧版本若报 `400 exceed_context_size_error`，退出 pi 后执行以下修复。优先用安装包自带 Node；只有安装时复用了合格的系统 Node 才回退到系统 `node`：
+
+```bash
+export PI_OPS_HOME="${PI_OPS_HOME:-$HOME/pi-ops-agent}"
+NODE="$PI_OPS_HOME/node/bin/node"
+[ -x "$NODE" ] || NODE="$(command -v node)"
+"$NODE" <<'JS'
+const fs = require('fs');
+const path = require('path');
 const dir = path.join(process.env.HOME, '.pi', 'agent');
 function update(name, change) {
-  const p = path.join(dir, name);
-  const value = JSON.parse(fs.readFileSync(p, 'utf8'));
-  fs.copyFileSync(p, p + '.' + Date.now() + '.bak');
+  const file = path.join(dir, name);
+  const value = JSON.parse(fs.readFileSync(file, 'utf8'));
+  fs.copyFileSync(file, `${file}.${Date.now()}.bak`);
   change(value);
-  fs.writeFileSync(p, JSON.stringify(value, null, 2) + '\n');
+  fs.writeFileSync(file, JSON.stringify(value, null, 2) + '\n');
 }
-update('models.json', s => {
-  for (const m of s.providers['llama-cpp'].models) {
-    m.contextWindow = 16384;
-    m.maxTokens = 4096;
+update('models.json', value => {
+  for (const model of value.providers['llama-cpp'].models) {
+    model.contextWindow = 16384;
+    model.maxTokens = 4096;
   }
 });
-update('settings.json', s => {
-  s.compaction = {...s.compaction, enabled: true, reserveTokens: 6144, keepRecentTokens: 4096};
-  s.branchSummary = {...s.branchSummary, reserveTokens: 4096};
+update('settings.json', value => {
+  value.compaction = {...value.compaction, enabled: true, reserveTokens: 6144, keepRecentTokens: 4096};
+  value.branchSummary = {...value.branchSummary, reserveTokens: 4096};
 });
 JS
-pi-ops
+"$PI_OPS_HOME/bin/pi-ops"
 ```
 
-如果安装时复用了系统 Node，可用 `node` 替代上述 Node 路径。如果工作目录有 `.pi/settings.json`，检查其中是否覆盖压缩设置。已有超长会话建议用 `/new` 开始新会话，重新提供任务要点；尚未超限时可用 `/compact` 压缩历史。
+单次输入或工具输出仍可能过大。使用 `/new` 开始新会话，或在尚未超限时用 `/compact` 压缩历史，并限制日志查询的行数。
 
-- **MANIFEST 信任锚点是备货的联网机**(自算无签名,只防搬运损坏,不防源头投毒);高安全场景需加 GPG 签名与上游哈希钉版(Roadmap)
-- 无 spec 块的自由文档验证模式,小模型可靠性有限(建议配 4b 或补 spec 块)
-- 多轮长上下文任务在纯 CPU 下有偶发超时(prompt 重处理 ~150 tok/s);可选缓解:更小 `-c`、4b/更小量化
-- 当前仅 x86_64;ARM(如麒麟 Sword)需加 arm64 构建档
+如果工作目录存在 `.pi/settings.json`，检查其中是否覆盖了全局压缩设置。升级会备份已有配置，并重写 `models.json`、`SYSTEM.md`、默认模型和上下文压缩参数；已有定制先单独留存。
 
-## Roadmap
+## 升级与卸载
 
-- [x] WSL PoC 全流程(2026-09-11)
-- [x] 运维骨架:SYSTEM.md + 只读工具 + 审批门实测(2026-09-11)
-- [x] 2b/4b 五任务 A/B 实测(2026-09-11)
-- [x] CI 双档离线包 + Release 自动发布(版本 26.3.x)(2026-09-11)
-- [x] 部署验证 pi-ops-verify(确定性实测层防幻觉)(2026-09-11)
-- [x] env-check / uninstall(2026-09-11)
-- [x] **麒麟 V10 真机交付闭环:全新安装全绿、零外联实测**(v26.3.4,2026-09-11)
-- [ ] 上游产物钉版 + 哈希固定(签名链)
-- [ ] 可选:pi 官方 `build-binaries.sh --offline-model-data` 单二进制形态对比
-- [ ] 可选:arm64 档(麒麟 Sword)/ skills 目录预置(运维 SOP)/ pi-mcp-adapter 离线化
+升级时下载、校验并安装新的匹配离线包即可。安装器会按校验和替换损坏或更新过的模型，并以包内 `default-model.txt` 重新设置默认模型。
+
+卸载应在已解压的发行包目录中运行：
+
+```bash
+./uninstall.sh       # 交互确认
+./uninstall.sh -y    # 无交互，用于脚本
+```
+
+卸载会停止服务、删除 `$PI_OPS_HOME`、还原安装前备份的 pi 配置并清理 shell PATH 行；会保留 `~/.pi/agent/sessions` 会话历史和 linger 设置。
+
+## 故障排查
+
+| 现象 | 处理 |
+| --- | --- |
+| `pi-ops: command not found` | 首次安装后用 `"$PI_OPS_HOME/bin/pi-ops"`，或新开 shell / source 对应 rc 文件 |
+| 预检失败 | 按 `env-check.sh` 的 `FAIL` 行处理：x86_64、glibc ≥ 2.28、基础命令、2B 的 4.5 GB 内存和 5 GB 磁盘是重点 |
+| 模型 120 秒未就绪 | 查看 `$PI_OPS_HOME/logs/llama.out`；有 systemd 时查看 `journalctl --user -u pi-ops-llama`；同时确认端口和模型完整性 |
+| SSH 退出后模型停止 | 检查 `systemctl --user status pi-ops-llama`；若 linger 启用失败，需要管理员执行安装器提示的 `loginctl enable-linger <用户>` |
+| 重启机器后模型未启动 | 运行 `pi-ops` 会按需拉起；`nohup` 兜底模式不会在开机时自启，也可执行 `"$PI_OPS_HOME/bin/llama-run" &` |
+| 安装包校验失败 | 重新从联网机下载、再次比对 Release 的 `.sha256`，再重新传输；不要跳过校验 |
+
+## 开发与构建
+
+面向交付的包由 GitHub Actions 构建。CI 固定 llama.cpp `b10901`、Node `22.20.0`、pi `0.85.1`，在 Rocky Linux 8 容器中编译并生成 `kylin-v10` 的 0.8B、2B 包；随后以普通用户、全新 HOME 在独立运行时容器做离线安装验收。打 `v*` tag 后，全部构建和验收通过才创建并公开 Release。
+
+本地开发备货脚本用于联网 Linux x86_64 环境：
+
+```bash
+./fetch-bundle.sh          # 备 2B 默认模型和 4B 备选模型
+./fetch-bundle.sh --skip-4b
+```
+
+它将素材写入 `bundle/` 并生成 `MANIFEST.sha256`；之后把整个目录带入内网运行 `./install.sh`。本地备货脚本会解析上游可用版本，和 CI 的固定交付构建不是同一条版本控制路径；正式现场交付请使用 Release 包。
+
+## 安全边界
+
+安装包提供危险命令审批门、敏感路径写入门和仅绑定回环地址的模型 API key。headless 模式中无法交互确认的危险命令默认拒绝；安装冒烟会验证诱导的 `rm -rf` 没有执行。
+
+这不是沙箱。pi 中的工具仍以当前用户权限执行，生产环境应使用专用低权限用户，并按现场要求叠加容器或系统隔离。`MANIFEST.sha256` 主要用于发现下载或传输损坏，信任锚点仍是联网备货机；高安全场景需要另行建立签名与上游哈希校验链。
 
 ## 参考
 
-- [pi 官网与文档](https://pi.dev) / [earendil-works/pi 仓库](https://github.com/earendil-works/pi)
-- [llama.cpp function-calling 文档](https://github.com/ggml-org/llama.cpp/blob/master/docs/function-calling.md)
-- [bartowski Qwen3.5 GGUF](https://huggingface.co/bartowski/Qwen_Qwen3.5-2B-GGUF)(模型源;Ollama registry 的同款不可用于 llama.cpp)
-- [Docker: 本地 LLM 工具调用实测](https://www.docker.com/blog/local-llm-tool-calling-a-practical-evaluation/)
-- [Qwen3 技术报告](https://arxiv.org/html/2505.09388v1)
+- [pi 文档](https://pi.dev)
+- [earendil-works/pi](https://github.com/earendil-works/pi)
+- [llama.cpp function calling](https://github.com/ggml-org/llama.cpp/blob/master/docs/function-calling.md)
+- [bartowski Qwen3.5 GGUF](https://huggingface.co/bartowski/Qwen_Qwen3.5-2B-GGUF)
 
 ## License
 
