@@ -1,6 +1,8 @@
 """Exercise the actual generated installer header without downloading a model."""
 import io
+import json
 import hashlib
+import re
 from pathlib import Path
 import subprocess
 import tarfile
@@ -11,6 +13,26 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class PackagingTests(unittest.TestCase):
+    def test_small_context_budgets_match_server_and_preserve_settings(self):
+        source = (ROOT / "install.sh").read_text(encoding="utf-8")
+        context = int(re.search(r"-c (\d+) --jinja", source).group(1))
+        declaration = re.search(r"printf '(.*?)'", source[source.index("first=1"):]).group(1)
+        model = json.loads(declaration % "qwen3.5-2b")
+        code = source.split('"$NODE" -e \'\n', 1)[1].split("\n' \"$PI_DIR/settings.json\"", 1)[0]
+        with tempfile.TemporaryDirectory() as directory:
+            settings_file = Path(directory) / "settings.json"
+            settings_file.write_text(json.dumps({"theme": "dark", "compaction": {"enabled": False, "keepRecentTokens": 20000}}))
+            subprocess.run(["node", "-e", code, str(settings_file), model["id"]], check=True)
+            settings = json.loads(settings_file.read_text())
+        self.assertEqual(model["contextWindow"], context)
+        self.assertTrue(settings["compaction"]["enabled"])
+        self.assertEqual(settings["theme"], "dark")
+        reserve = settings["compaction"]["reserveTokens"]
+        self.assertLess(model["maxTokens"], reserve)
+        self.assertLess(reserve, context)
+        self.assertLess(settings["compaction"]["keepRecentTokens"], context - reserve)
+        self.assertLess(settings["branchSummary"]["reserveTokens"], context)
+
     def test_one_click_exit_and_cleanup(self):
         source = (ROOT / "scripts/ci-build.sh").read_text(encoding="utf-8")
         header = source.split("cat > \"$RUN.part\" <<'EOF'\n", 1)[1].split("\nEOF\n", 1)[0] + "\n"

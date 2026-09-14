@@ -24,6 +24,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
       - name: 校验打包及损坏包回归测试
         run: |
           for script in install.sh env-check.sh fetch-bundle.sh scripts/*.sh; do bash -n "$script"; done
@@ -118,7 +121,7 @@ jobs:
             apt-get update -qq
             apt-get install -y -qq git ca-certificates curl xz-utils gzip procps python3 passwd util-linux
           else
-            dnf install -y -q git ca-certificates curl bash tar gzip xz coreutils findutils gawk grep sed procps-ng python3 shadow-utils util-linux
+            dnf install -y -q git ca-certificates curl bash tar gzip xz findutils gawk grep sed procps-ng python3 shadow-utils util-linux
           fi
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4

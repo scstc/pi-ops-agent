@@ -212,7 +212,7 @@ backup "$PI_DIR/models.json"
     id="$(basename "$g" .gguf)"
     [ "$first" = 1 ] || echo ','
     first=0
-    printf '        {"id": "%s", "contextWindow": 32768, "maxTokens": 8192}' "$id"
+    printf '        {"id": "%s", "contextWindow": 16384, "maxTokens": 4096}' "$id"
   done
   echo ''
   echo '      ]'
@@ -231,6 +231,9 @@ let s={}; try{ s=JSON.parse(fs.readFileSync(p,"utf8")) }catch(e){}
 s.defaultProvider="llama-cpp";
 s.defaultModel=process.argv[2];
 s.enableInstallTelemetry=false;
+// Match the llama-run 16K context; leave room for responses and tool schemas.
+s.compaction={...s.compaction,enabled:true,reserveTokens:6144,keepRecentTokens:4096};
+s.branchSummary={...s.branchSummary,reserveTokens:4096};
 fs.writeFileSync(p, JSON.stringify(s,null,2)+"\n");
 ' "$PI_DIR/settings.json" "$DEFAULT_ID"
 log "写入默认模型:$DEFAULT_ID" "default model: $DEFAULT_ID"

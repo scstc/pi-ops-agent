@@ -7,7 +7,7 @@
 - **安全**:危险命令审批门(headless 默认拒)+ 敏感路径写入门 + 本机 api-key
 - **开箱即用**:装完自动配好一切,`pi-ops` 直接用;另附部署验证(`pi-ops-verify`)、环境自检、卸载
 
-> **版本号规范:`年份.季度.发布序号`**(当前 **v26.3.10** = 2026 Q3 第 10 个发布)。打 `v*` tag 触发 CI 构建“目标发行版 × 模型”离线包，通过独立验收后自动挂 [GitHub Release](https://github.com/scstc/pi-ops-agent/releases)。
+> **版本号规范:`年份.季度.发布序号`**(当前 **v26.3.11** = 2026 Q3 第 11 个发布)。打 `v*` tag 触发 CI 构建“目标发行版 × 模型”离线包，通过独立验收后自动挂 [GitHub Release](https://github.com/scstc/pi-ops-agent/releases)。
 
 ## 目标环境与兼容性
 
@@ -30,10 +30,10 @@
 
 ```bash
 # 联网机下载(或浏览器到 Releases 页),拷到内网服务器(U盘/scp)
-gh release download v26.3.10 -R scstc/pi-ops-agent -p "pi-ops-agent-v26.3.10-kylin-v10-qwen3.5-2b-x64.run*"
+gh release download v26.3.11 -R scstc/pi-ops-agent -p "pi-ops-agent-v26.3.11-kylin-v10-qwen3.5-2b-x64.run*"
 
 # 内网服务器一键安装(无需 root / 网络;自动解压、环境自检、安装并清理临时目录)
-bash pi-ops-agent-v26.3.10-kylin-v10-qwen3.5-2b-x64.run
+bash pi-ops-agent-v26.3.11-kylin-v10-qwen3.5-2b-x64.run
 pi-ops
 ```
 
@@ -41,7 +41,7 @@ pi-ops
 
 ```bash
 mkdir -p pi-ops
-tar xzf pi-ops-agent-v26.3.10-kylin-v10-qwen3.5-2b-x64.tar.gz -C pi-ops
+tar xzf pi-ops-agent-v26.3.11-kylin-v10-qwen3.5-2b-x64.tar.gz -C pi-ops
 cd pi-ops
 bash env-check.sh
 ./install.sh
@@ -156,6 +156,39 @@ pi 没有任何内置审批弹窗——bash 以运行用户权限直接执行。
 - 技术栈:pi(`@earendil-works/pi-coding-agent`,MIT;⚠️ 旧 `@mariozechner` scope 已废弃)/ llama.cpp / node 22(自带,不碰系统)
 
 ## 已知限制
+
+### 400 exceed_context_size_error（旧安装配置修复）
+
+旧安装器在 `models.json` 声明 32768 上下文，但 `llama-run` 实际为 `-c 16384`，长会话会超出服务容量。安装器现已对齐为 16384，输出上限 4096，并配置自动压缩（预留 6144、近期保留 4096 token）。单次输入或工具输出过大仍可能超限，查询日志时应限制行数。
+
+已安装的现场机器可退出 pi 后，使用包内 Node 修改配置（无需重启模型服务）：
+
+```bash
+"${PI_OPS_HOME:-$HOME/pi-ops-agent}/node/bin/node" <<'JS'
+const fs = require('fs'), path = require('path');
+const dir = path.join(process.env.HOME, '.pi', 'agent');
+function update(name, change) {
+  const p = path.join(dir, name);
+  const value = JSON.parse(fs.readFileSync(p, 'utf8'));
+  fs.copyFileSync(p, p + '.' + Date.now() + '.bak');
+  change(value);
+  fs.writeFileSync(p, JSON.stringify(value, null, 2) + '\n');
+}
+update('models.json', s => {
+  for (const m of s.providers['llama-cpp'].models) {
+    m.contextWindow = 16384;
+    m.maxTokens = 4096;
+  }
+});
+update('settings.json', s => {
+  s.compaction = {...s.compaction, enabled: true, reserveTokens: 6144, keepRecentTokens: 4096};
+  s.branchSummary = {...s.branchSummary, reserveTokens: 4096};
+});
+JS
+pi-ops
+```
+
+如果安装时复用了系统 Node，可用 `node` 替代上述 Node 路径。如果工作目录有 `.pi/settings.json`，检查其中是否覆盖压缩设置。已有超长会话建议用 `/new` 开始新会话，重新提供任务要点；尚未超限时可用 `/compact` 压缩历史。
 
 - **MANIFEST 信任锚点是备货的联网机**(自算无签名,只防搬运损坏,不防源头投毒);高安全场景需加 GPG 签名与上游哈希钉版(Roadmap)
 - 无 spec 块的自由文档验证模式,小模型可靠性有限(建议配 4b 或补 spec 块)
