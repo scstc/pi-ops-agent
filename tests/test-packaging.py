@@ -13,6 +13,26 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class PackagingTests(unittest.TestCase):
+    def test_cli_exit_does_not_wait_for_idle_refresh_stdout(self):
+        source = (ROOT / "install.sh").read_text(encoding="utf-8")
+        wrapper = source.split('cat > "$PI_OPS_HOME/bin/pi-ops" <<EOF\n', 1)[1].split('\nEOF\n', 1)[0]
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            (folder / "bin").mkdir()
+            (folder / "idle-min").write_text("5\n")
+            for name, body in {"curl": "exit 0", "node": "printf 'reply\\n'; exit 7"}.items():
+                executable = folder / "bin" / name
+                executable.write_text("#!/bin/sh\n" + body + "\n")
+                executable.chmod(0o755)
+            script = f'PI_OPS_HOME="{folder}"\nPORT=8787\nNODE="{folder}/bin/node"\nPI_CLI=unused\n'
+            script += f'PATHLINE=\'export PATH="{folder}/bin:$PATH"\'\nLDLINE=\n'
+            script += 'cat > "$PI_OPS_HOME/bin/pi-ops" <<EOF\n' + wrapper + '\nEOF\n'
+            subprocess.run(["bash", "-c", script], check=True)
+            # Captured pipes must close as soon as Pi exits, including nonzero exits.
+            result = subprocess.run(["bash", str(folder / "bin/pi-ops")], capture_output=True, text=True, timeout=3)
+            self.assertEqual(result.returncode, 7)
+            self.assertEqual(result.stdout, "reply\n")
+
     def test_spark_fetch_selects_bf16_and_upgrades_cached_pi_without_network(self):
         version = re.search(r'^PI_VER="([^"]+)"', (ROOT / "fetch-bundle.sh").read_text(), re.M).group(1)
         for previous in ("pi 0.85.1", "pi " + version):

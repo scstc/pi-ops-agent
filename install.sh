@@ -328,7 +328,7 @@ fi
 touch "\$MARKER_"
 
 # 刷新循环在后台跑(pi 必须前台:TUI 在后台拿不到终端会静默退出)
-( while :; do sleep 30; touch "\$MARKER_"; done ) &
+( while :; do sleep 30; touch "\$MARKER_"; done ) </dev/null >/dev/null 2>&1 &
 refresh_=\$!
 "$NODE" "$PI_CLI" "\$@"
 rc_=\$?

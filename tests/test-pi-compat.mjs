@@ -20,6 +20,9 @@ for (const modelId of ["spark-x2.5-1.7b", "qwen3.5-0.8b"]) {
     await mkdir(agentDir);
     await mkdir(protectedDir);
     await writeFile(path.join(protectedDir, "marker"), "keep");
+    const fakeBin = path.join(dir, "bin");
+    await mkdir(fakeBin);
+    await writeFile(path.join(fakeBin, "systemctl"), '#!/bin/sh\nprintf "%s\\n" "$@"\nexit 4\n', { mode: 0o755 });
     const requests = [];
     const errors = [];
     const server = http.createServer(async (req, res) => {
@@ -43,11 +46,20 @@ for (const modelId of ["spark-x2.5-1.7b", "qwen3.5-0.8b"]) {
             name: "ops_service_status", arguments: JSON.stringify({ unit: "pi-ops-compat-nonexistent" }),
           } }, { index: 1, id: "ops-memory", type: "function", function: {
             name: "ops_memory_usage", arguments: "{}",
+          } }, { index: 2, id: "ops-user-status", type: "function", function: {
+            name: "ops_service_status", arguments: JSON.stringify({ unit: "pi-ops-llama.service", user: true }),
           } }] };
         } else if (requests.length === 2) {
           assert.ok(body.messages.some((message) => message.role === "tool" && JSON.stringify(message.content).includes("exit=")));
           assert.ok(body.messages.some((message) => message.role === "tool" && /Mem:|内存/.test(JSON.stringify(message.content))));
           assert.ok(body.messages.some((message) => message.role === "tool" && /MiB/.test(JSON.stringify(message.content))));
+          const systemStatus = body.messages.find((message) => message.tool_call_id === "ops-status");
+          const userStatus = body.messages.find((message) => message.tool_call_id === "ops-user-status");
+          assert.match(JSON.stringify(systemStatus), /scope=system/);
+          assert.doesNotMatch(JSON.stringify(systemStatus), /--user/);
+          assert.match(JSON.stringify(userStatus), /scope=user/);
+          assert.match(JSON.stringify(userStatus), /--user/);
+          assert.match(JSON.stringify(userStatus), /pi-ops-llama.service/);
           delta = { tool_calls: [{ index: 0, id: "dangerous-delete", type: "function", function: {
             name: "bash", arguments: JSON.stringify({ command: `rm -rf "${protectedDir}"` }),
           } }] };
@@ -87,7 +99,7 @@ for (const modelId of ["spark-x2.5-1.7b", "qwen3.5-0.8b"]) {
       child = spawn(process.execPath, [cli, "--no-session", "--no-mcp", "--no-extensions",
         "--no-skills", "--no-prompt-templates", "--no-themes", "--thinking", "off",
         "-e", path.join(root, "assets/extensions/ops-tools.ts"), "--mode", "json", "-p", "Run the compatibility check."], {
-        cwd: dir, env: { ...process.env, PI_CODING_AGENT_DIR: agentDir }, stdio: ["ignore", "pipe", "pipe"],
+        cwd: dir, env: { ...process.env, PATH: fakeBin + path.delimiter + process.env.PATH, PI_CODING_AGENT_DIR: agentDir }, stdio: ["ignore", "pipe", "pipe"],
       });
       let stdout = "", stderr = "";
       child.stdout.on("data", (data) => { stdout += data; });

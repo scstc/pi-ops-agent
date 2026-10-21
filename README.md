@@ -111,7 +111,7 @@ pi-ops                                      # 交互 TUI，/quit 退出
 pi-ops -p "检查磁盘使用情况"                 # 单次问答
 pi-ops-verify 部署架构.md                    # 输出 verify-report-时间戳.md
 pi-ops-verify 部署架构.md my-report.md       # 指定报告文件
-systemctl --user status pi-ops-llama         # systemd 用户服务状态
+systemctl --user status pi-ops-llama.service # systemd 用户服务状态
 ```
 
 模型服务仅监听 `127.0.0.1`，使用本地 API key。默认空闲 5 分钟会回收模型内存：

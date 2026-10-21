@@ -138,19 +138,24 @@ export default function (pi: any) {
     pi.registerTool({
       name: "ops_service_status",
       label: "服务状态",
-      description: "仅查询用户指定的 systemd 服务状态(只读)，如 sshd、docker、nginx。不用于内存或磁盘查询。服务未运行时返回 inactive 状态而非报错。",
+      description: "仅查询指定的 systemd 服务状态(只读)。系统服务如 sshd、docker、nginx 默认 user=false；本助手模型服务为 pi-ops-llama.service，必须 user=true。不用于内存或磁盘查询。",
       parameters: {
         type: "object",
-        properties: { unit: { type: "string", description: "systemd 单元名" } },
+        properties: {
+          unit: { type: "string", description: "systemd 单元名" },
+          user: { type: "boolean", description: "是否查询当前用户的服务；默认 false 查询系统服务" },
+        },
         required: ["unit"],
       },
       async execute(_toolCallId: string, params: any) {
+        const details = { scope: params.user === true ? "user" : "system", unit: params.unit };
+        const prefix = `scope=${details.scope} unit=${details.unit}\n`;
         try {
-          const text = run("systemctl", ["status", "--no-pager", "-l", "-n", "30", "--", params.unit]);
-          return ok(text);
+          const text = run("systemctl", [...(params.user === true ? ["--user"] : []), "status", "--no-pager", "-l", "-n", "30", "--", params.unit]);
+          return ok(prefix + text, details);
         } catch (e: any) {
           // systemctl 退出码:active=0/inactive|dead=3/不存在=4 —— 非零退出本身就是答案的一部分
-          return ok(`exit=${e.status}\n${e.stdout || e.stderr || e.message}`);
+          return ok(`${prefix}exit=${e.status}\n${e.stdout || e.stderr || e.message}`, details);
         }
       },
     });
