@@ -95,7 +95,10 @@ fi
 as_user env LD_LIBRARY_PATH="$INSTALLED/node/lib" "$INSTALLED/node/bin/node" -e '
   const fs=require("fs"),p=process.argv[1],model=process.argv[2];
   if(JSON.parse(fs.readFileSync(p,"utf8")).defaultModel!==model) process.exit(1);
-' "$VERIFY_HOME/.pi/agent/settings.json" "$MODEL_ID"
+  const registry=JSON.parse(fs.readFileSync(process.argv[3],"utf8"));
+  const entry=registry.providers["llama-cpp"].models.find(entry=>entry.id===model);
+  if(entry?.contextWindow!==(model==="spark-x2.5-1.7b"?1048576:65536)) process.exit(1);
+' "$VERIFY_HOME/.pi/agent/settings.json" "$MODEL_ID" "$VERIFY_HOME/.pi/agent/models.json"
 for binary in "$INSTALLED/node/bin/node" "$INSTALLED/llama/llama-server" "$INSTALLED/llama/"*.so; do
   dependencies="$(LD_LIBRARY_PATH="$INSTALLED/node/lib:$INSTALLED/llama" ldd "$binary")"
   if printf '%s\n' "$dependencies" | grep -q 'not found'; then
@@ -108,6 +111,21 @@ OLD_PID="$(as_user bash -c 'cat "$PI_OPS_HOME/llama.pid"')"
 PORT="$(as_user env LD_LIBRARY_PATH="$INSTALLED/node/lib" "$INSTALLED/node/bin/node" -e 'const fs=require("fs"); console.log(new URL(JSON.parse(fs.readFileSync(process.argv[1])).providers["llama-cpp"].baseUrl).port)' "$VERIFY_HOME/.pi/agent/models.json")"
 as_user env CI_STOP_TIMEOUT=20 bash -c "$(declare -f ci_stop_llama); ci_stop_llama \"\$PI_OPS_HOME/llama.pid\" \"$PORT\"" 2>&1 | tee -a "$DIAGNOSTICS/lifecycle.log"
 as_user timeout 480 "$INSTALLED/bin/pi-ops" -p '只回复 OK' </dev/null
+if [ "$MODEL_ID" = spark-x2.5-1.7b ]; then
+  # Spark 必须实际完成一次工具调用，不能只验证纯文本聊天。
+  as_user timeout 480 "$INSTALLED/bin/pi-ops" --mode json -p \
+    '必须调用 ops_disk_usage 工具查看真实磁盘用量，再用一句话汇总。' </dev/null \
+    > "$DIAGNOSTICS/model-tools.jsonl"
+  as_user env LD_LIBRARY_PATH="$INSTALLED/node/lib" "$INSTALLED/node/bin/node" -e '
+    const fs=require("fs");
+    const events=fs.readFileSync(process.argv[1],"utf8").trim().split("\n").map(line=>JSON.parse(line));
+    if(!events.some(e=>e.type==="tool_execution_end" && e.toolName==="ops_disk_usage" && !e.isError
+      && e.result?.content?.some(c=>c.type==="text" && c.text.trim()))) {
+      console.error("Spark did not complete ops_disk_usage; see model-tools.jsonl");
+      process.exit(1);
+    }
+  ' "$DIAGNOSTICS/model-tools.jsonl"
+fi
 NEW_PID="$(as_user bash -c 'cat "$PI_OPS_HOME/llama.pid"')"
 test "$NEW_PID" != "$OLD_PID"
 as_user env CI_STOP_TIMEOUT=20 bash -c "$(declare -f ci_stop_llama); ci_stop_llama \"\$PI_OPS_HOME/llama.pid\" \"$PORT\"" 2>&1 | tee -a "$DIAGNOSTICS/lifecycle.log"

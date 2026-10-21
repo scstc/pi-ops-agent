@@ -87,6 +87,9 @@ MEM="$(free -m 2>/dev/null | awk '/^Mem:/{print $2}')"
 if ! command -v free >/dev/null 2>&1; then
   line "$L_MEM" "$S_WR unknown (free/procps unavailable; install smoke test will verify)"
   WARN=1
+elif [ "$CHECK_MODEL" = "spark-x2.5-1.7b" ]; then
+  line "$L_MEM" "$S_WR ${MEM:-0}MB (Spark BF16 1M: observed startup RSS ~17.3 GiB; 32 GB RAM recommended; install smoke test will verify)"
+  WARN=1
 elif [ "${MEM:-0}" -ge 8000 ]; then line "$L_MEM" "$S_OK ${MEM}MB $M_MEM_OK"
 elif [ "${MEM:-0}" -ge 4500 ]; then line "$L_MEM" "~ ${MEM}MB $M_MEM_MID"
 elif [ "$CHECK_MODEL" = "qwen3.5-0.8b" ]; then

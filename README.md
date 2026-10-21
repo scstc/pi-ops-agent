@@ -1,6 +1,6 @@
 # pi-ops-agent
 
-面向内网和客户现场的离线运维 Agent。它把 Node、pi、llama.cpp 和一个本地 Qwen GGUF 模型封装为无需 root、安装期间不访问网络的交付包；安装后可在目标服务器上用自然语言查询和分析运维问题。
+面向内网和客户现场的离线运维 Agent。它把 Node、pi、llama.cpp 和一个本地 Qwen 或 Spark GGUF 模型封装为无需 root、安装期间不访问网络的交付包；安装后可在目标服务器上用自然语言查询和分析运维问题。
 
 当前发行版本为 **v26.3.11**。每个 Release 资产只包含一个模型和一个目标发行版，文件名会写明二者。离线包目前面向 x86_64 的麒麟 V10 / RHEL 8 系环境。
 
@@ -10,20 +10,26 @@
 | --- | --- |
 | CPU / 系统 | x86_64、glibc ≥ 2.28；已在麒麟 V10、Ubuntu 22.04/24.04 与 WSL Ubuntu 验证 |
 | 基础命令 | `bash`、`tar`、`xz`、`curl`；`systemctl`、`ss`、`timeout` 缺失时会降级，不阻止安装 |
-| 2B 档内存 | 至少 4.5 GB，8 GB 较舒适；实测 llama-server 常驻约 3.2 GB、空闲 CPU 接近 0 |
+| 2B 档内存 | 预检至少 4.5 GB，建议 8 GB；WSL 下新 64K 配置的 llama-server 启动 RSS 约 2.6 GiB，现场还需为 Node 和其他服务留空间 |
+| Spark 1M 档内存 | WSL 实测模型进程启动 RSS 约 17.3 GiB，建议机器配 32 GB；完整百万 token 输入的速度和资源峰值待压测 |
 | 磁盘 | 安装目录至少 5 GB 可用空间；运行 `.run` 时临时目录还需容纳一份解压内容 |
 | 0.8B 档 | 用于内存更紧的轻量问答和巡检；最低可用内存尚未完成实测，预检会告警后继续由安装冒烟验证 |
 
-发布包有两档模型：
+当前已发布的 v26.3.11 有两档 Qwen 模型；本分支新增 Spark，需重新构建离线包：
 
 | 模型 | 使用建议 | 已知边界 |
 | --- | --- | --- |
 | `qwen3.5-0.8b` | 资源很紧、简单问答或轻量巡检 | 工具调用与复杂归因能力较弱 |
 | `qwen3.5-2b` | 默认推荐，用于受限机器上的常规运维问答 | 多轮复杂任务的归因深度有限，可能出现小模型幻觉 |
+| `spark-x2.5-1.7b` | 新增可选模型，对应 Ollama `SparkLLM/Spark-X2.5-1.7B:latest` 的 BF16 权重 | 官方 GGUF 文件约 3.42 GB；现场最低内存和运维效果需实测 |
 
 `2B`、`0.8B` 是模型参数档位，不能当作交付包大小。2B 使用的 Q4_K_M GGUF 模型文件实测约 1.4 GB；Release 包还包含 Node、pi、llama.cpp 和脚本，实际下载大小以 Release 资产显示为准。
 
 历史 WSL 纯 CPU 评测中，2B 在五个真实运维任务的两轮测试为 5/5，能定位 `docker-proxy` 和 PID，但归因较浅。仓库中的 `tests/eval-ops.sh [模型id]` 可复现评测；不要将该结果视为所有现场环境的性能承诺。
+
+新构建的离线包按模型配置实际上下文：**Spark 1M（1,048,576 token），Qwen 3.5 的 0.8B / 2B / 4B 为 64K（65,536 token）**。Qwen 3.5 官方原生上限为 256K，本项目默认使用 64K。Pi 的 `contextWindow` 和 llama-server 的 `-c` 由安装器同一份规则生成；模型服务使用单并发槽，安装时检查 `/v1/models` 返回的实际窗口，若与 Pi 不一致就报错。接入的 Spark 是 XHToken 官方 BF16 GGUF，固定修订 `1f7fa33b1245c14730da39e125714ad3a327901b`，无需安装 Ollama。大窗口的 KV 缓存会增加内存占用，模型文件大小不等于运行内存需求。
+
+2026-10-22 在 WSL Ubuntu 26.04 纯 CPU 环境实测：Spark 1.7B BF16 与 Qwen 2B Q4_K_M 的上游 SHA-256 校验均通过。使用 llama.cpp `b10901`、Pi `1.3.0` 和单槽配置，接口实际返回的窗口分别为 1,048,576 / 65,536 token，两个模型均成功调用 `ops_disk_usage`、接收真实工具结果并生成汇总。此次验证覆盖窗口配置、模型加载和短任务工具调用通路；长会话压缩、完整窗口输入的性能、运维归因准确率及麒麟离线安装包验收仍需分别验证。
 
 ## Quick start：联网备货到离线首次问答
 
@@ -127,11 +133,11 @@ pi-ops-verify /path/to/部署架构.md
 
 规范和示例见 [deploy-spec-example.md](examples/deploy-spec-example.md)，将服务、端口、目录、文件、版本和连通性替换为现场实际要求即可；安装器不会把示例复制到安装目录。没有 `deploy-spec` 块时也能使用自由理解模式，但小模型的可靠性较低；复杂文档建议补全规范块。`deploy-spec` 模式中确定性实测有不符项时返回 `1`；全部符合且 Agent 正常完成时为 `0`，文档或启动器不存在时为 `2`，其他错误可能返回 Agent 或超时命令的退出码。
 
-## 16K 上下文配置与旧安装修复
+## 上下文配置与旧安装修复
 
-当前安装器已将 pi 的 `contextWindow` 固定为 16384、`maxTokens` 为 4096，并启用会话压缩（预留 6144 token，保留最近 4096 token），与 `llama-run -c 16384` 对齐。
+当前安装器为 Spark 配置 1M、Qwen 3.5 配置 64K，其他自备模型保守保留 16K；每个模型的 Pi 声明与生成的 `llama-run` 保持一致，临时通过 `MODEL` 切换时也会按实际模型 ID 选择窗口。`maxTokens` 为 4096，并启用会话压缩（预留 6144 token，保留最近 4096 token）。
 
-旧版本若报 `400 exceed_context_size_error`，退出 pi 后执行以下修复。优先用安装包自带 Node；只有安装时复用了合格的系统 Node 才回退到系统 `node`：
+旧版本若报 `400 exceed_context_size_error`，优先用新包重新安装，以同时更新模型服务和 Pi。下面的 16K 修复仅适用于仍运行旧版 `llama-run -c 16384` 的安装；不要单独用它覆盖新包的大窗口配置。退出 pi 后，优先用安装包自带 Node；只有安装时复用了合格的系统 Node 才回退到系统 `node`：
 
 ```bash
 export PI_OPS_HOME="${PI_OPS_HOME:-$HOME/pi-ops-agent}"
@@ -192,16 +198,19 @@ JS
 
 ## 开发与构建
 
-面向交付的包由 GitHub Actions 构建。CI 固定 llama.cpp `b10901`、Node `22.20.0`、pi `0.85.1`，在 Rocky Linux 8 容器中编译并生成 `kylin-v10` 的 0.8B、2B 包；随后以普通用户、全新 HOME 在独立运行时容器做离线安装验收。打 `v*` tag 后，全部构建和验收通过才创建并公开 Release。
+面向交付的包由 GitHub Actions 构建。CI 固定 llama.cpp `b10901`、Node `22.20.0`、pi `1.3.0`（2026-10-21 核对的最新稳定版），在 Rocky Linux 8 容器中编译并生成 `kylin-v10` 的 Qwen 0.8B、2B 和 Spark 1.7B BF16 包；随后以普通用户、全新 HOME 在独立运行时容器做离线安装验收。打 `v*` tag 后，全部构建和验收通过才创建并公开 Release。新增 Spark 的包文件名使用 `spark-x2.5-1.7b`，v26.3.11 不含此包。
 
 本地开发备货脚本用于联网 Linux x86_64 环境：
 
 ```bash
 ./fetch-bundle.sh          # 备 2B 默认模型和 4B 备选模型
 ./fetch-bundle.sh --skip-4b
+./fetch-bundle.sh --model spark-x2.5-1.7b  # 备 Spark 1.7B BF16，并设为默认模型
 ```
 
-它将素材写入 `bundle/` 并生成 `MANIFEST.sha256`；之后把整个目录带入内网运行 `./install.sh`。本地备货脚本会解析上游可用版本，和 CI 的固定交付构建不是同一条版本控制路径；正式现场交付请使用 Release 包。
+它将素材写入 `bundle/` 并生成 `MANIFEST.sha256`；之后把整个目录带入内网运行 `./install.sh`。已有其他模型时会保留，当前选择写入 `default-model.txt`。Pi 与 CI 一样固定为 `1.3.0`，旧 Pi bundle 会在重新备货时替换；Node 和 llama.cpp 仍会解析上游可用版本，正式现场交付请使用 Release 包。
+
+CI 还会使用模拟 OpenAI 接口运行真实 Pi CLI，验证运维扩展、工具结果回传及无交互模式的危险命令拦截；Spark 离线包的独立安装验收额外要求模型实际完成一次 `ops_disk_usage` 工具调用。
 
 ## 安全边界
 
@@ -215,6 +224,7 @@ JS
 - [earendil-works/pi](https://github.com/earendil-works/pi)
 - [llama.cpp function calling](https://github.com/ggml-org/llama.cpp/blob/master/docs/function-calling.md)
 - [bartowski Qwen3.5 GGUF](https://huggingface.co/bartowski/Qwen_Qwen3.5-2B-GGUF)
+- [XHToken Spark-X2.5-1.7B GGUF](https://huggingface.co/XHToken/Spark-X2.5-1.7B-GGUF)
 
 ## License
 

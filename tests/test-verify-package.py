@@ -107,12 +107,14 @@ class VerifyPackageTests(unittest.TestCase):
     def test_accepts_valid_tar_and_run_packages(self):
         with tempfile.TemporaryDirectory() as directory:
             folder = Path(directory)
-            for name, run in (("package.tar.gz", False), ("package.run", True)):
-                package = folder / name
-                make_package(package, run=run)
-                result = self.check(package)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertIn("OK:", result.stdout)
+            for model in (MODEL, "qwen3.5-0.8b", "spark-x2.5-1.7b"):
+                for name, run in (("package.tar.gz", False), ("package.run", True)):
+                    with self.subTest(model=model, run=run):
+                        package = folder / name
+                        make_package(package, model=model, run=run)
+                        result = self.check(package, model)
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertIn("OK:", result.stdout)
 
     def test_rejects_requested_model_mismatch(self):
         with tempfile.TemporaryDirectory() as directory:

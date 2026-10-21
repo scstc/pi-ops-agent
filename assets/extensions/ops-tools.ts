@@ -6,7 +6,7 @@
  *  2) 只读运维工具 —— ops_service_status / ops_disk_usage
  *
  * 安装位置:~/.pi/agent/extensions/pi-ops-tools.ts(pi 经 jiti 加载,免编译)
- * 返回值契约:pi 0.85.x 的自定义工具 execute 必须返回
+ * 返回值契约:pi 1.3.x 的自定义工具 execute 必须返回
  *   { content: [{type:"text",text}], details } —— 裸字符串会被静默丢弃(模型收到空结果)!
  */
 
@@ -123,7 +123,9 @@ export default function (pi: any) {
 
     let okFlag = false;
     try {
-      // pi 0.85.x 签名:confirm(title, message, opts?) —— 没有"默认值"参数
+      // 无 UI 的 print/JSON 模式直接拒绝,不尝试弹出确认。
+      if (!ctx.hasUI) return { block: true, reason: `无交互界面,拒绝危险操作: ${what}` };
+      // confirm(title, message, opts?) —— 没有"默认值"参数
       okFlag = await ctx.ui.confirm("⚠ pi-ops-agent:危险操作确认", what);
     } catch {
       okFlag = false; // headless(-p)模式下无交互 → 默认拒绝(安全优先)
@@ -131,7 +133,7 @@ export default function (pi: any) {
     if (!okFlag) return { block: true, reason: `用户未确认危险操作: ${what}` };
   });
 
-  // ---------- 2. 只读工具(schema 用裸 JSON Schema,pi 0.85.x 原生支持) ----------
+  // ---------- 2. 只读工具(schema 用裸 JSON Schema) ----------
   try {
     pi.registerTool({
       name: "ops_service_status",

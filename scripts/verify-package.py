@@ -12,7 +12,7 @@ import sys
 import tarfile
 
 
-MODELS = ("qwen3.5-2b", "qwen3.5-0.8b")
+MODELS = ("qwen3.5-2b", "qwen3.5-0.8b", "spark-x2.5-1.7b")
 RUN_MARKER = b"__PI_OPS_PAYLOAD_BELOW__\n"
 CHUNK_SIZE = 1024 * 1024
 MAX_SMALL_FILE = 8 * 1024 * 1024

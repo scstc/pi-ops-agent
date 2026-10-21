@@ -139,6 +139,15 @@ fi
 [ -f "$DEFAULT_GGUF" ] || DEFAULT_GGUF="$(ls "$PI_OPS_HOME"/models/*.gguf | head -1)"
 DEFAULT_ID="$(basename "$DEFAULT_GGUF" .gguf)"
 
+# Pi 与 llama-server 共用同一份窗口规则,切换 MODEL 时也按实际模型选择。
+context_for_model() {
+  case "$1" in
+    spark-x2.5-1.7b) echo 1048576 ;;
+    qwen3.5-0.8b|qwen3.5-2b|qwen3.5-4b) echo 65536 ;;
+    *) echo 16384 ;;
+  esac
+}
+
 # ---------- 5. pi(已装版本与 bundle 不一致则升级)----------
 PI_INSTALLED=""
 [ -f "$PI_PKG_DIR/package.json" ] && \
@@ -212,7 +221,7 @@ backup "$PI_DIR/models.json"
     id="$(basename "$g" .gguf)"
     [ "$first" = 1 ] || echo ','
     first=0
-    printf '        {"id": "%s", "contextWindow": 16384, "maxTokens": 4096}' "$id"
+    printf '        {"id": "%s", "contextWindow": %s, "maxTokens": 4096}' "$id" "$(context_for_model "$id")"
   done
   echo ''
   echo '      ]'
@@ -231,7 +240,7 @@ let s={}; try{ s=JSON.parse(fs.readFileSync(p,"utf8")) }catch(e){}
 s.defaultProvider="llama-cpp";
 s.defaultModel=process.argv[2];
 s.enableInstallTelemetry=false;
-// Match the llama-run 16K context; leave room for responses and tool schemas.
+// Leave room for responses and tool schemas for every configured context size.
 s.compaction={...s.compaction,enabled:true,reserveTokens:6144,keepRecentTokens:4096};
 s.branchSummary={...s.branchSummary,reserveTokens:4096};
 fs.writeFileSync(p, JSON.stringify(s,null,2)+"\n");
@@ -257,12 +266,13 @@ ulimit -c 0 2>/dev/null || true
 touch "$PI_OPS_HOME/.last-use" 2>/dev/null || true   # 保鲜标记(空闲回收的计时基准)
 export LD_LIBRARY_PATH="$LLAMA_DIR\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
 MODEL_GGUF="\${MODEL:-$DEFAULT_GGUF}"
+$(declare -f context_for_model)
 exec "$LLAMA_BIN" \\
   -m "\$MODEL_GGUF" \\
   --alias "\$(basename "\$MODEL_GGUF" .gguf)" \\
   --host 127.0.0.1 --port "$PORT" \\
   --api-key "$(cat "$KEY_FILE")" \\
-  -c 16384 --jinja
+  -c "\$(context_for_model "\$(basename "\$MODEL_GGUF" .gguf)")" --parallel 1 --jinja
 EOF
 chmod +x "$PI_OPS_HOME/bin/llama-run"
 
@@ -420,6 +430,22 @@ done
 [ "$ok" = 1 ] || die "llama-server 120s 未就绪(检查端口占用/模型完整性;日志:$PI_OPS_HOME/logs/llama.out 或 journalctl --user -u pi-ops-llama)" \
                     "llama-server not ready in 120s (check port occupancy / model integrity; logs: $PI_OPS_HOME/logs/llama.out or journalctl --user -u pi-ops-llama)"
 log "llama-server 就绪 ✓" "llama-server ready OK"
+
+# 校验实际服务窗口,防止自动适配资源时缩小窗口却仍向 Pi 声明较大的值。
+ACTUAL_CONTEXT="$(curl -sf -m 10 -H "Authorization: Bearer $LLAMA_KEY" "http://127.0.0.1:$PORT/v1/models" \
+  | "$NODE" -e '
+    let input=""; process.stdin.on("data",chunk=>input+=chunk);
+    process.stdin.on("end",()=>{
+      const model=JSON.parse(input).data?.find(model=>model.id===process.argv[1]);
+      if(!Number.isSafeInteger(model?.meta?.n_ctx)) process.exit(1);
+      console.log(model.meta.n_ctx);
+    });
+  ' "$DEFAULT_ID")" || die "无法读取模型服务的实际上下文窗口" "cannot read actual model context window"
+EXPECTED_CONTEXT="$(context_for_model "$DEFAULT_ID")"
+[ "$ACTUAL_CONTEXT" = "$EXPECTED_CONTEXT" ] \
+  || die "上下文不一致:Pi=$EXPECTED_CONTEXT,模型服务=$ACTUAL_CONTEXT;请检查内存和 llama 日志" \
+         "context mismatch: Pi=$EXPECTED_CONTEXT, server=$ACTUAL_CONTEXT; check memory and llama logs"
+log "上下文窗口:$ACTUAL_CONTEXT token(Pi 与模型服务一致)" "context window: $ACTUAL_CONTEXT tokens (Pi matches server)"
 
 log "冒烟:chat+tools 请求 …" "smoke: chat+tools request ..."
 smoke="$(curl -sf -m 60 -H "Authorization: Bearer $LLAMA_KEY" -H 'Content-Type: application/json' \

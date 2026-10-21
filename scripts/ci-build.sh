@@ -13,7 +13,7 @@ set -euo pipefail
 
 : "${LLAMA_TAG:=b10901}"
 : "${NODE_VER:=22.20.0}"
-: "${PI_VER:=0.85.1}"
+: "${PI_VER:=1.3.0}"
 : "${DISTRO_SLUG:?需要 DISTRO_SLUG(如 ubuntu-22.04)}"
 : "${BUNDLE_MODEL_ID:?需要 BUNDLE_MODEL_ID(如 qwen3.5-2b)}"
 : "${GGUF_URL:?需要 GGUF_URL}"

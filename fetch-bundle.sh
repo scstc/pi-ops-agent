@@ -4,7 +4,23 @@
 # (全程离线、不需要 root、装完免手动配置大模型)。
 #
 # 用法: ./fetch-bundle.sh [--skip-4b]    # 默认备 qwen3.5-2b(默认模型)与 qwen3.5-4b(A/B 备选)
+#       ./fetch-bundle.sh --model spark-x2.5-1.7b  # 仅备 Spark 1.7B BF16
 set -euo pipefail
+
+MODEL_ID=qwen3.5-2b
+SKIP_4B=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --skip-4b) SKIP_4B=1; shift ;;
+    --model)
+      MODEL_ID="${2:?--model requires a model ID}"; shift 2
+      case "$MODEL_ID" in
+        qwen3.5-2b|spark-x2.5-1.7b) ;;
+        *) echo "Unsupported model: $MODEL_ID" >&2; exit 1 ;;
+      esac ;;
+    *) echo "Usage: $0 [--skip-4b] [--model qwen3.5-2b|spark-x2.5-1.7b]" >&2; exit 1 ;;
+  esac
+done
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 BUNDLE="$ROOT/bundle"
@@ -18,6 +34,7 @@ LLAMA_TAG_FALLBACK="b10901"
 NODE_DIST="https://registry.npmmirror.com/-/binary/node"
 NPM_REGISTRY="https://registry.npmmirror.com"
 PI_PKG="@earendil-works/pi-coding-agent"
+PI_VER="1.3.0"
 
 log() { printf '\033[1;32m[fetch]\033[0m %s\n' "$*"; }
 
@@ -65,7 +82,7 @@ else
 fi
 
 # ---------- 3. pi(用刚下载的 node 自举 npm,打成自包含 bundle)----------
-if [ -f "$BUNDLE/pi-bundle.tar.gz" ]; then
+if [ -f "$BUNDLE/pi-bundle.tar.gz" ] && [ "$(cat "$BUNDLE/pi-version.txt" 2>/dev/null)" = "pi $PI_VER" ]; then
   log "pi bundle 已存在,跳过"
 else
   log "自举 node 打包 pi(npmmirror)…"
@@ -75,13 +92,14 @@ else
   ( cd "$ROOT/.tools/stage" \
     && npm init -y >/dev/null \
     && npm install --omit=dev --no-audit --no-fund --ignore-scripts \
-         --registry="$NPM_REGISTRY" "$PI_PKG@latest" )
-  node -e 'console.log("pi 版本:", require(process.argv[1] + "/package.json").version)' \
-    "$ROOT/.tools/stage/node_modules/$PI_PKG" | tee "$BUNDLE/pi-version.txt"
+         --registry="$NPM_REGISTRY" "$PI_PKG@$PI_VER" )
+  node -e 'console.log("pi", require(process.argv[1] + "/package.json").version)' \
+    "$ROOT/.tools/stage/node_modules/$PI_PKG" | tee "$BUNDLE/pi-version.txt.part"
   # 原子产出:tar 中断不会留下残缺 bundle
   tar -czf "$BUNDLE/pi-bundle.tar.gz.part" -C "$ROOT/.tools/stage" \
     node_modules package.json package-lock.json
   mv "$BUNDLE/pi-bundle.tar.gz.part" "$BUNDLE/pi-bundle.tar.gz"
+  mv "$BUNDLE/pi-version.txt.part" "$BUNDLE/pi-version.txt"
 fi
 
 # ---------- 4. 模型 GGUF(HF 镜像 bartowski 量化,llama.cpp 官方转换器产出)----------
@@ -95,11 +113,20 @@ hf_model() { # hf_model <repo> <HF文件名> <本地文件名>
   fetch "https://hf-mirror.com/$repo/resolve/main/$file" "$out"
 }
 
-hf_model bartowski/Qwen_Qwen3.5-2B-GGUF  Qwen_Qwen3.5-2B-Q4_K_M.gguf qwen3.5-2b.gguf
-if [ "${1:-}" != "--skip-4b" ]; then
-  hf_model bartowski/Qwen_Qwen3.5-4B-GGUF Qwen_Qwen3.5-4B-Q4_K_M.gguf qwen3.5-4b.gguf
-fi
-printf '%s\n' qwen3.5-2b > "$BUNDLE/default-model.txt"
+case "$MODEL_ID" in
+  spark-x2.5-1.7b)
+    # 官方 BF16 GGUF,固定到与 CI 相同的模型修订。
+    if [ ! -f "$BUNDLE/spark-x2.5-1.7b.gguf" ]; then
+      fetch "https://hf-mirror.com/XHToken/Spark-X2.5-1.7B-GGUF/resolve/1f7fa33b1245c14730da39e125714ad3a327901b/Spark-X2.5-1.7B.gguf" \
+            "$BUNDLE/spark-x2.5-1.7b.gguf"
+    fi ;;
+  qwen3.5-2b)
+    hf_model bartowski/Qwen_Qwen3.5-2B-GGUF Qwen_Qwen3.5-2B-Q4_K_M.gguf qwen3.5-2b.gguf
+    if [ "$SKIP_4B" = 0 ]; then
+      hf_model bartowski/Qwen_Qwen3.5-4B-GGUF Qwen_Qwen3.5-4B-Q4_K_M.gguf qwen3.5-4b.gguf
+    fi ;;
+esac
+printf '%s\n' "$MODEL_ID" > "$BUNDLE/default-model.txt"
 
 # ---------- 5. 校验清单 ----------
 ( cd "$BUNDLE" \

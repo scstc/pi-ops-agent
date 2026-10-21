@@ -4,3 +4,4 @@
 *.md   text eol=lf
 *.json text eol=lf
 *.service text eol=lf
+assets/bin/* text eol=lf
