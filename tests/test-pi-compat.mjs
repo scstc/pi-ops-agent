@@ -36,11 +36,16 @@ test("Pi upgrade preserves local model configuration, ops tools and headless blo
         const names = body.tools.map((tool) => tool.function.name);
         assert.ok(names.includes("ops_service_status"));
         assert.ok(names.includes("ops_disk_usage"));
+        assert.ok(names.includes("ops_memory_usage"));
         delta = { tool_calls: [{ index: 0, id: "ops-status", type: "function", function: {
           name: "ops_service_status", arguments: JSON.stringify({ unit: "pi-ops-compat-nonexistent" }),
+        } }, { index: 1, id: "ops-memory", type: "function", function: {
+          name: "ops_memory_usage", arguments: "{}",
         } }] };
       } else if (requests.length === 2) {
         assert.ok(body.messages.some((message) => message.role === "tool" && JSON.stringify(message.content).includes("exit=")));
+        assert.ok(body.messages.some((message) => message.role === "tool" && /Mem:|内存/.test(JSON.stringify(message.content))));
+        assert.ok(body.messages.some((message) => message.role === "tool" && /MiB/.test(JSON.stringify(message.content))));
         delta = { tool_calls: [{ index: 0, id: "dangerous-delete", type: "function", function: {
           name: "bash", arguments: JSON.stringify({ command: `rm -rf "${protectedDir}"` }),
         } }] };
@@ -93,6 +98,8 @@ test("Pi upgrade preserves local model configuration, ops tools and headless blo
       const events = stdout.trim().split("\n").map((line) => JSON.parse(line));
       assert.ok(events.some((event) => event.type === "tool_execution_end" && event.toolName === "ops_service_status"
         && !event.isError && event.result?.content?.some((content) => content.type === "text" && content.text.trim())));
+      assert.ok(events.some((event) => event.type === "tool_execution_end" && event.toolName === "ops_memory_usage"
+        && !event.isError && event.result?.content?.some((content) => content.type === "text" && /Mem:|内存/.test(content.text))));
       assert.doesNotMatch(stderr, /注册失败|Failed to load extension/);
       assert.equal(await readFile(path.join(protectedDir, "marker"), "utf8"), "keep");
     } finally {

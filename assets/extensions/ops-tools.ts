@@ -3,7 +3,7 @@
  *  1) 危险操作审批门 —— 拦截 bash/powershell 的危险语义命令,并对写类工具(write/edit)
  *     写敏感路径(~/.ssh、systemd 用户单元、/etc、shell 配置)设门。
  *     注意:这是 best-effort 纵深防御层,不是沙箱;生产环境请叠加低权限用户/容器隔离。
- *  2) 只读运维工具 —— ops_service_status / ops_disk_usage
+ *  2) 只读运维工具 —— ops_service_status / ops_disk_usage / ops_memory_usage
  *
  * 安装位置:~/.pi/agent/extensions/pi-ops-tools.ts(pi 经 jiti 加载,免编译)
  * 返回值契约:pi 1.3.x 的自定义工具 execute 必须返回
@@ -138,7 +138,7 @@ export default function (pi: any) {
     pi.registerTool({
       name: "ops_service_status",
       label: "服务状态",
-      description: "查看 systemd 服务状态(只读)。输入单元名,如 sshd、docker、nginx。服务未运行时返回 inactive 状态而非报错。",
+      description: "仅查询用户指定的 systemd 服务状态(只读)，如 sshd、docker、nginx。不用于内存或磁盘查询。服务未运行时返回 inactive 状态而非报错。",
       parameters: {
         type: "object",
         properties: { unit: { type: "string", description: "systemd 单元名" } },
@@ -162,7 +162,7 @@ export default function (pi: any) {
     pi.registerTool({
       name: "ops_disk_usage",
       label: "磁盘用量",
-      description: "查看磁盘分区用量(只读),等价 df -h。",
+      description: "仅查询磁盘分区用量(只读)，等价 df -h。不用于内存查询。",
       parameters: { type: "object", properties: {}, required: [] },
       async execute() {
         return ok(run("df", ["-h"]));
@@ -170,5 +170,35 @@ export default function (pi: any) {
     });
   } catch (e) {
     console.error("[pi-ops] ops_disk_usage 注册失败:", e);
+  }
+
+  try {
+    pi.registerTool({
+      name: "ops_memory_usage",
+      label: "内存用量",
+      description: "查询本机物理内存和交换分区用量(只读)，等价 free -m。用户询问内存占用或可用内存时使用，不查询磁盘或服务。",
+      parameters: { type: "object", properties: {}, required: [] },
+      async execute() {
+        const raw = run("env", ["LC_ALL=C", "free", "-m"]);
+        const row = (label: string) => {
+          const line = raw.split("\n").find((line: string) => line.startsWith(label + ":"));
+          const values = (line || "").trim().split(/\s+/).slice(1).map(Number);
+          if (values.length < (label === "Mem" ? 6 : 3) || values.some((n: number) => !Number.isFinite(n)))
+            throw new Error("无法解析 free -m 输出:" + raw);
+          return values;
+        };
+        const [total, used, free, shared, cache, available] = row("Mem");
+        const [swapTotal, swapUsed, swapFree] = row("Swap");
+        return ok(
+          `整机物理内存:已用 ${used} MiB / 总计 ${total} MiB (${(used / total * 100).toFixed(1)}%);` +
+          `可用 ${available} MiB,空闲 ${free} MiB,缓冲/缓存 ${cache} MiB。\n` +
+          `Swap:已用 ${swapUsed} MiB / 总计 ${swapTotal} MiB。\n单位均为 MiB,不是字节;回答时保留数值和单位。`,
+          { unit: "MiB", memory: { total, used, free, shared, cache, available },
+            swap: { total: swapTotal, used: swapUsed, free: swapFree } },
+        );
+      },
+    });
+  } catch (e) {
+    console.error("[pi-ops] ops_memory_usage 注册失败:", e);
   }
 }
