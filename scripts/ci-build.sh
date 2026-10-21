@@ -23,6 +23,10 @@ case "$BUNDLE_MODEL_ID" in
 esac
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+PROJECT_VERSION="$(tr -d '\r\n' < "$ROOT/VERSION")"
+[[ "$PROJECT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo '[ci] invalid VERSION' >&2; exit 1; }
+VER="${PI_OPS_VERSION:-v$PROJECT_VERSION}"
+[ "$VER" = "v$PROJECT_VERSION" ] || { echo '[ci] package version must match VERSION' >&2; exit 1; }
 W="$ROOT/.ci-work"
 DIST="$ROOT/dist"
 # bundle 必须是本次构建专属的干净目录:同一工作目录内不同模型不能混装。
@@ -150,9 +154,8 @@ printf '%s\n' "$BUNDLE_MODEL_ID" > "$BUNDLE/default-model.txt"
    | sort -z | xargs -0 sha256sum > MANIFEST.sha256 )
 
 # ---------- 6. 外层交付包(仓库脚本 + assets + bundle) ----------
-VER="${PI_OPS_VERSION:-dev}"
 OUT="$DIST/pi-ops-agent-$VER-$DISTRO_SLUG-$BUNDLE_MODEL_ID-x64.tar.gz"
-tar -czf "$OUT" -C "$ROOT" install.sh uninstall.sh env-check.sh assets README.md LICENSE -C "$W" bundle
+tar -czf "$OUT" -C "$ROOT" install.sh uninstall.sh env-check.sh assets README.md LICENSE VERSION -C "$W" bundle
 ( cd "$DIST" && sha256sum "$(basename "$OUT")" > "$(basename "$OUT").sha256" )
 
 # 自解压交付包:仅依赖目标机已有的 bash / tar / mktemp,解压后复用原安装器与其 MANIFEST 校验。

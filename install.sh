@@ -475,12 +475,18 @@ else
 fi
 
 # ---------- 12. 完成 ----------
+PROJECT_VERSION=unknown
+if [ -f "$ROOT/VERSION" ]; then
+  cp "$ROOT/VERSION" "$PI_OPS_HOME/VERSION"
+  PROJECT_VERSION="$(tr -d '\r\n' < "$ROOT/VERSION")"
+fi
 if [ "$IS_UTF8" = 1 ]; then
 cat <<EOF
 
 ============================================
  pi-ops-agent 安装完成 ✓
 ============================================
+ 项目版本    : $PROJECT_VERSION (Pi $PI_INSTALLED)
  主目录      : $PI_OPS_HOME
  模型(默认) : $DEFAULT_ID  (llama-server 127.0.0.1:$PORT,带 api-key)
  备选模型    : $(ls "$PI_OPS_HOME/models/" | tr '\n' ' ')
@@ -499,6 +505,7 @@ cat <<EOF
 ============================================
  pi-ops-agent install DONE
 ============================================
+ Version     : $PROJECT_VERSION (Pi $PI_INSTALLED)
  Home        : $PI_OPS_HOME
  Model (def) : $DEFAULT_ID  (llama-server 127.0.0.1:$PORT, with api-key)
  Models      : $(ls "$PI_OPS_HOME/models/" | tr '\n' ' ')

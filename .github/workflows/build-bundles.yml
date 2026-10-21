@@ -90,7 +90,7 @@ jobs:
           BUNDLE_MODEL_ID: ${{ matrix.model.id }}
           GGUF_URL: ${{ matrix.model.gguf_url }}
           GGUF_CACHE: ${{ github.workspace }}/.ci-gguf-cache/${{ matrix.model.id }}.gguf
-          PI_OPS_VERSION: ${{ github.ref_name == 'main' && format('dev-{0}', github.sha) || github.ref_name }}
+          PI_OPS_VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
 
       - name: 上传产物
         uses: actions/upload-artifact@v4
