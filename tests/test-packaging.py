@@ -68,6 +68,12 @@ class PackagingTests(unittest.TestCase):
             subprocess.run(["bash", "-c", script], check=True)
             models = json.loads((folder / "models.json").read_text())["providers"]["llama-cpp"]["models"]
             self.assertEqual({model["id"]: model["contextWindow"] for model in models}, expected)
+            for model in models:
+                if model["id"].startswith("qwen3.5-"):
+                    self.assertFalse(model["reasoning"])
+                    self.assertFalse(model["samplingParams"]["chat_template_kwargs"]["enable_thinking"])
+                else:
+                    self.assertNotIn("samplingParams", model)
             # The generated launcher must stay aligned even after switching MODEL
             # between a previously installed Qwen and a new Spark package.
             for default_id in ("spark-x2.5-1.7b", "qwen3.5-2b"):

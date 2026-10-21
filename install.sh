@@ -221,7 +221,13 @@ backup "$PI_DIR/models.json"
     id="$(basename "$g" .gguf)"
     [ "$first" = 1 ] || echo ','
     first=0
-    printf '        {"id": "%s", "contextWindow": %s, "maxTokens": 4096}' "$id" "$(context_for_model "$id")"
+    printf '        {"id": "%s", "contextWindow": %s, "maxTokens": 4096' "$id" "$(context_for_model "$id")"
+    case "$id" in
+      qwen3.5-0.8b|qwen3.5-2b|qwen3.5-4b)
+        printf ', "reasoning": false, "samplingParams": {"chat_template_kwargs": {"enable_thinking": false}}'
+        ;;
+    esac
+    printf '}'
   done
   echo ''
   echo '      ]'
