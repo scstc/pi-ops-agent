@@ -2,7 +2,7 @@
 
 面向内网和客户现场的离线运维 Agent。它把 Node、pi、llama.cpp 和一个本地 Qwen 或 Spark GGUF 模型封装为无需 root、安装期间不访问网络的交付包；安装后可在目标服务器上用自然语言查询和分析运维问题。
 
-当前项目版本为 **26.4.1**（仓库根目录 `VERSION`），内部 Pi 依赖版本为 **1.3.0**。构建产物使用 `pi-ops-agent-v26.4.1-<发行版>-<模型>-x64` 命名；安装成功后可用 `cat ~/pi-ops-agent/VERSION` 核对项目版本。每个 Release 资产只包含一个模型和一个目标发行版，文件名会写明二者。离线包目前面向 x86_64 的麒麟 V10 / RHEL 8 系环境。
+当前项目版本为 **26.4.1**（仓库根目录 `VERSION`），内部 Pi 依赖版本为 **1.3.0**。构建产物使用 `pi-ops-agent-v26.4.1-<发行版>-<模型>-x64` 命名；安装成功后可用 `cat ~/pi-ops-agent/VERSION` 核对项目版本。每个 Release 资产只包含一个模型和一个目标发行版，文件名会写明二者。26.4.1 起，Actions 产物与 Release 仅上传完整 `.run` 和 `.run.sha256`，不重复上传同一 payload 的 `.tar.gz`；模型、运行环境和安装步骤不变。离线包目前面向 x86_64 的麒麟 V10 / RHEL 8 系环境。
 
 ## 适用范围
 
@@ -81,9 +81,9 @@ bash ./pi-ops-agent-v26.3.11-kylin-v10-qwen3.5-2b-x64.run
 
 之后新开终端即可使用 `pi-ops`。若使用 bash，也可执行 `source ~/.bashrc`；zsh 用户执行 `source ~/.zshrc`。安装器只会更新已经存在的对应 rc 文件，两个文件都不存在时才创建 `~/.bashrc`。
 
-### 3. `.tar.gz` 备用安装方式
+### 3. 旧版 `.tar.gz` 备用安装方式
 
-现场策略不允许执行自解压脚本时，下载匹配的 `.tar.gz` 和 `.tar.gz.sha256`，先校验再解压：
+已有旧版 `.tar.gz` 的安装方式仍然可用。以下示例针对 v26.3.11；26.4.1 起不再重复分发该归档，使用上面的 `.run` 安装方式。
 
 ```bash
 sha256sum -c pi-ops-agent-v26.3.11-kylin-v10-qwen3.5-2b-x64.tar.gz.sha256

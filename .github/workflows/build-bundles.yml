@@ -96,7 +96,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: bundle-${{ matrix.target.slug }}-${{ matrix.model.id }}
-          path: dist/*
+          path: |
+            dist/*.run
+            dist/*.run.sha256
           if-no-files-found: error
           retention-days: 7
       - name: 保存完整编译诊断
@@ -175,8 +177,6 @@ jobs:
           gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --dir published
           (cd published && sha256sum -c *.sha256)
           for model in qwen3.5-2b qwen3.5-0.8b spark-x2.5-1.7b; do
-            for extension in run tar.gz; do
-              python3 scripts/verify-package.py --model "$model" published/pi-ops-agent-"$GITHUB_REF_NAME"-kylin-v10-"$model"-x64."$extension"
-            done
+            python3 scripts/verify-package.py --model "$model" published/pi-ops-agent-"$GITHUB_REF_NAME"-kylin-v10-"$model"-x64.run
           done
           gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false --latest

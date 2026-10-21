@@ -62,12 +62,15 @@ dump_diagnostics() {
   fi
 }
 RUN="$ARTIFACTS/$(basename "$(find "$ARTIFACTS" -maxdepth 1 -name '*.run' -print -quit)")"
-TAR="$ARTIFACTS/$(basename "$(find "$ARTIFACTS" -maxdepth 1 -name '*.tar.gz' -print -quit)")"
+TAR="$(find "$ARTIFACTS" -maxdepth 1 -name '*.tar.gz' -print -quit)"
 (cd "$ARTIFACTS" && sha256sum -c *.sha256)
 python3 "$ROOT/scripts/verify-package.py" --model "$MODEL_ID" "$RUN"
-python3 "$ROOT/scripts/verify-package.py" --model "$MODEL_ID" "$TAR"
-line="$(awk '/^__PI_OPS_PAYLOAD_BELOW__$/{print NR + 1; exit}' "$RUN")"
-test "$(tail -n +"$line" "$RUN" | sha256sum | awk '{print $1}')" = "$(sha256sum "$TAR" | awk '{print $1}')"
+# 兼容旧产物；新产物只上传完整 .run，避免再上传一份相同 payload。
+if [ -n "$TAR" ]; then
+  python3 "$ROOT/scripts/verify-package.py" --model "$MODEL_ID" "$TAR"
+  line="$(awk '/^__PI_OPS_PAYLOAD_BELOW__$/{print NR + 1; exit}' "$RUN")"
+  test "$(tail -n +"$line" "$RUN" | sha256sum | awk '{print $1}')" = "$(sha256sum "$TAR" | awk '{print $1}')"
+fi
 
 # 此用户仅存在于本次一次性 CI 容器中，没有系统 Node、llama 或旧 pi 配置。
 VERIFY_HOME="$ROOT/.verify-user"
