@@ -34,6 +34,64 @@ for v in PI_OPS_HOME HOME; do
   esac
 done
 
+# 分体包显式导入模型；升级时复用已安装模型。先校验，避免坏模型触发运行环境更新。
+MODEL_FILE=""
+SELECTED_MODEL_ID=""
+MODEL_DIR="${PI_OPS_MODEL_DIR:-}"
+if [ -z "$MODEL_DIR" ] && [ -s "$PI_OPS_HOME/model-dir" ]; then MODEL_DIR="$(cat "$PI_OPS_HOME/model-dir")"; fi
+MODEL_DIR="${MODEL_DIR:-$PI_OPS_HOME/models}"
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --model)
+      [ "$#" -ge 2 ] || die "--model 缺少 GGUF 路径" "--model requires a GGUF path"
+      MODEL_FILE="$2"; shift 2 ;;
+    --model-id)
+      [ "$#" -ge 2 ] || die "--model-id 缺少模型 ID" "--model-id requires a model ID"
+      SELECTED_MODEL_ID="$2"; shift 2 ;;
+    --model-dir)
+      [ "$#" -ge 2 ] && [ -n "$2" ] || die "--model-dir 缺少目录" "--model-dir requires a directory"
+      MODEL_DIR="$2"; shift 2 ;;
+    --help|-h)
+      printf '%s\n' 'Usage: bash package.run [--model /path/model.gguf | --model-id installed-model-id] [--model-dir /data/models]' \
+        'First install: --model requires model.gguf.sha256 alongside the GGUF.' \
+        'Upgrade: omit options to keep the currently selected installed model.'
+      exit 0 ;;
+    *) die "未知参数:$1" "unknown argument: $1" ;;
+  esac
+done
+MODEL_DIR="$(readlink -m -- "$MODEL_DIR")"
+case "$MODEL_DIR" in *[!A-Za-z0-9/._~-]*|'/'|'') die "模型目录含非法字符或为根目录" "invalid model directory" ;; esac
+[ -z "$MODEL_FILE" ] || [ -z "$SELECTED_MODEL_ID" ] || die "--model 与 --model-id 不能同时使用" "use either --model or --model-id"
+case "$SELECTED_MODEL_ID" in *[!A-Za-z0-9._-]*) die "模型 ID 非法" "invalid model ID" ;; esac
+if [ -n "$MODEL_FILE" ]; then
+  [ -f "$MODEL_FILE" ] || die "模型文件不存在:$MODEL_FILE" "model file not found: $MODEL_FILE"
+  MODEL_FILE="$(cd "$(dirname "$MODEL_FILE")" && pwd)/$(basename "$MODEL_FILE")"
+  MODEL_NAME="$(basename "$MODEL_FILE")"
+  case "$MODEL_NAME" in
+    *[!A-Za-z0-9._-]*|.gguf) die "模型文件名非法:$MODEL_NAME" "invalid model filename: $MODEL_NAME" ;;
+    *.gguf) ;;
+    *) die "模型必须是 .gguf 文件" "model must be a .gguf file" ;;
+  esac
+  [ "$(head -c 4 "$MODEL_FILE")" = GGUF ] || die "模型不是 GGUF 格式" "model does not have GGUF magic"
+  [ -f "$MODEL_FILE.sha256" ] || die "缺少模型校验文件:$MODEL_FILE.sha256" "missing model checksum: $MODEL_FILE.sha256"
+  MODEL_SHA="$(awk 'NR==1{print $1}' "$MODEL_FILE.sha256")"
+  [[ "$MODEL_SHA" =~ ^[[:xdigit:]]{64}$ ]] || die "模型校验文件无效" "invalid model checksum file"
+  [ "${MODEL_SHA,,}" = "$(sha256sum "$MODEL_FILE" | awk '{print $1}')" ] || die "模型 SHA-256 校验失败" "model SHA-256 mismatch"
+  SELECTED_MODEL_ID="${MODEL_NAME%.gguf}"
+fi
+PROGRAM_PACKAGE=0
+if [ -f "$BUNDLE/package-kind.txt" ]; then
+  [ "$(cat "$BUNDLE/package-kind.txt")" = program ] || die "未知程序包类型" "unknown package kind"
+  PROGRAM_PACKAGE=1
+  if [ -n "$SELECTED_MODEL_ID" ] && [ -z "$MODEL_FILE" ]; then
+    [ -f "$MODEL_DIR/$SELECTED_MODEL_ID.gguf" ] || die "指定的模型尚未安装:$SELECTED_MODEL_ID" "selected model is not installed: $SELECTED_MODEL_ID"
+  fi
+  if [ -z "$MODEL_FILE" ] && ! compgen -G "$MODEL_DIR/*.gguf" >/dev/null; then
+    die "首次安装请使用 --model /路径/模型.gguf，并放置同名 .sha256 文件" \
+        "first install requires --model /path/model.gguf and its .sha256 file"
+  fi
+fi
+
 # ---------- 1. 产物完整性 ----------
 if [ -f "$BUNDLE/MANIFEST.sha256" ]; then
   log "校验 bundle 完整性(sha256)…" "verifying bundle integrity (sha256) ..."
@@ -96,38 +154,53 @@ fi
 LLAMA_DIR="$(dirname "$LLAMA_BIN")"
 
 # ---------- 4. 模型 GGUF ----------
-mkdir -p "$PI_OPS_HOME/models"
+mkdir -p "$PI_OPS_HOME" "$MODEL_DIR"
 shopt -s nullglob
 gguf_ok() { [ "$(head -c 4 "$1" 2>/dev/null)" = "GGUF" ]; }
-for g in "$BUNDLE"/*.gguf; do
+for g in "$BUNDLE"/*.gguf "${MODEL_FILE:-}"; do
+  [ -n "$g" ] || continue
   base="$(basename "$g")"
   case "$base" in
     *[!A-Za-z0-9._-]*) die "模型文件名含非法字符:$base" "invalid chars in model filename: $base" ;;
   esac
   gguf_ok "$g" || die "模型文件损坏(非 GGUF 格式,可能传输截断):$base" \
                       "model file corrupted (not GGUF, likely truncated transfer): $base"
-  dst="$PI_OPS_HOME/models/$base"
+  dst="$MODEL_DIR/$base"
   if [ -f "$dst" ] && [ "$(sha256sum "$g" | awk '{print $1}')" = "$(sha256sum "$dst" | awk '{print $1}')" ]; then
     log "模型 $base 已存在,跳过" "model $base already present, skip"
   else
     [ -f "$dst" ] && log "模型 $base 与包内内容不同,替换" "model $base differs from bundle, replace" \
                  || log "安装模型 $base(数 GB,拷贝需片刻)…" "installing model $base (GBs, copying) ..."
-    cp "$g" "$dst"
+    cp "$g" "$dst.part"
+    mv "$dst.part" "$dst"
   fi
 done
-[ -n "$(ls -A "$PI_OPS_HOME/models" 2>/dev/null)" ] || die "没有任何 GGUF 模型" "no GGUF model at all"
+[ -n "$(ls -A "$MODEL_DIR" 2>/dev/null)" ] || die "没有任何 GGUF 模型" "no GGUF model at all"
 # 新包通过 default-model.txt 指定默认模型。旧包没有该文件时仍沿用 2b 优先策略。
 # 同时要求所指 GGUF 确在本 bundle 内，避免一个残缺/混装包悄然选中机器上的旧模型。
 DEFAULT_GGUF=""
-if [ -f "$BUNDLE/default-model.txt" ]; then
+if [ "${PROGRAM_PACKAGE:-0}" = 1 ]; then
+  if [ -z "$SELECTED_MODEL_ID" ] && [ -f "$PI_DIR/settings.json" ]; then
+    SELECTED_MODEL_ID="$("$NODE" -e 'try { const s=require(process.argv[1]); if(s.defaultProvider==="llama-cpp") process.stdout.write(s.defaultModel || ""); } catch {}' "$PI_DIR/settings.json")"
+    case "$SELECTED_MODEL_ID" in *[!A-Za-z0-9._-]*) SELECTED_MODEL_ID="" ;; esac
+    [ -f "$MODEL_DIR/$SELECTED_MODEL_ID.gguf" ] || SELECTED_MODEL_ID=""
+  fi
+  if [ -z "$SELECTED_MODEL_ID" ]; then
+    installed_models=("$MODEL_DIR"/*.gguf)
+    [ "${#installed_models[@]}" = 1 ] || die "存在多个模型，请用 --model-id 指定" "multiple installed models; select one with --model-id"
+    SELECTED_MODEL_ID="$(basename "${installed_models[0]}" .gguf)"
+  fi
+  DEFAULT_GGUF="$MODEL_DIR/$SELECTED_MODEL_ID.gguf"
+  gguf_ok "$DEFAULT_GGUF" || die "已安装模型损坏:$SELECTED_MODEL_ID" "installed model is corrupt: $SELECTED_MODEL_ID"
+elif [ -f "$BUNDLE/default-model.txt" ]; then
   BUNDLE_DEFAULT_ID="$(tr -d '\r\n' < "$BUNDLE/default-model.txt")"
   case "$BUNDLE_DEFAULT_ID" in
     *[!A-Za-z0-9._-]*|'')
       die "default-model.txt 无有效模型 ID" "default-model.txt has no valid model ID"
       ;;
     *)
-      if [ -f "$BUNDLE/$BUNDLE_DEFAULT_ID.gguf" ] && [ -f "$PI_OPS_HOME/models/$BUNDLE_DEFAULT_ID.gguf" ]; then
-        DEFAULT_GGUF="$PI_OPS_HOME/models/$BUNDLE_DEFAULT_ID.gguf"
+      if [ -f "$BUNDLE/$BUNDLE_DEFAULT_ID.gguf" ] && [ -f "$MODEL_DIR/$BUNDLE_DEFAULT_ID.gguf" ]; then
+        DEFAULT_GGUF="$MODEL_DIR/$BUNDLE_DEFAULT_ID.gguf"
       else
         die "default-model.txt 指定的模型不在 bundle 中:$BUNDLE_DEFAULT_ID" \
             "default-model.txt model is missing from bundle: $BUNDLE_DEFAULT_ID"
@@ -135,9 +208,11 @@ if [ -f "$BUNDLE/default-model.txt" ]; then
       ;;
   esac
 fi
-[ -n "$DEFAULT_GGUF" ] || DEFAULT_GGUF="$PI_OPS_HOME/models/qwen3.5-2b.gguf"
-[ -f "$DEFAULT_GGUF" ] || DEFAULT_GGUF="$(ls "$PI_OPS_HOME"/models/*.gguf | head -1)"
+[ -n "$DEFAULT_GGUF" ] || DEFAULT_GGUF="$MODEL_DIR/qwen3.5-2b.gguf"
+[ -f "$DEFAULT_GGUF" ] || DEFAULT_GGUF="$(ls "$MODEL_DIR"/*.gguf | head -1)"
 DEFAULT_ID="$(basename "$DEFAULT_GGUF" .gguf)"
+printf '%s\n' "$MODEL_DIR" > "$PI_OPS_HOME/model-dir.part"
+mv "$PI_OPS_HOME/model-dir.part" "$PI_OPS_HOME/model-dir"
 
 # Pi 与 llama-server 共用同一份窗口规则,切换 MODEL 时也按实际模型选择。
 context_for_model() {
@@ -217,7 +292,7 @@ backup "$PI_DIR/models.json"
   echo "      \"apiKey\": \"$LLAMA_KEY\","
   echo '      "models": ['
   first=1
-  for g in "$PI_OPS_HOME"/models/*.gguf; do
+  for g in "$MODEL_DIR"/*.gguf; do
     id="$(basename "$g" .gguf)"
     [ "$first" = 1 ] || echo ','
     first=0
@@ -266,19 +341,26 @@ cat > "$PI_OPS_HOME/bin/llama-run" <<EOF
 #!/usr/bin/env bash
 # 由 install.sh 生成:启动本地 llama-server
 # llama.cpp 预编译包是"二进制+同目录 .so"布局,必须带上 LD_LIBRARY_PATH(无尾部空项,防 cwd 注入)
-# 临时切模型(如 A/B):MODEL=$PI_OPS_HOME/models/qwen3.5-4b.gguf 再重启服务
+# 临时切模型(如 A/B):MODEL=$MODEL_DIR/qwen3.5-4b.gguf 再重启服务
 # 关 core dump:crash-loop 时每轮可砸 1.5GB+ 核转储,把磁盘 IO 打满(D 态卡整机)
 ulimit -c 0 2>/dev/null || true
 touch "$PI_OPS_HOME/.last-use" 2>/dev/null || true   # 保鲜标记(空闲回收的计时基准)
 export LD_LIBRARY_PATH="$LLAMA_DIR\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
 MODEL_GGUF="\${MODEL:-$DEFAULT_GGUF}"
 $(declare -f context_for_model)
+# dev64 的 0.8B 在 16 线程出现性能倒退；默认最多 8 线程，允许显式覆盖。
+THREADS_="\${PI_OPS_THREADS:--1}"
+if [ -z "\${PI_OPS_THREADS:-}" ] && [ "\$(basename "\$MODEL_GGUF" .gguf)" = qwen3.5-0.8b ]; then
+  THREADS_="\$(nproc 2>/dev/null || echo 1)"
+  [ "\$THREADS_" -le 8 ] || THREADS_=8
+fi
 exec "$LLAMA_BIN" \\
   -m "\$MODEL_GGUF" \\
   --alias "\$(basename "\$MODEL_GGUF" .gguf)" \\
   --host 127.0.0.1 --port "$PORT" \\
   --api-key "$(cat "$KEY_FILE")" \\
-  -c "\$(context_for_model "\$(basename "\$MODEL_GGUF" .gguf)")" --parallel 1 --jinja
+  -c "\$(context_for_model "\$(basename "\$MODEL_GGUF" .gguf)")" --parallel 1 --jinja \\
+  --threads "\$THREADS_" --threads-batch "\${PI_OPS_THREADS_BATCH:-\$THREADS_}"
 EOF
 chmod +x "$PI_OPS_HOME/bin/llama-run"
 
@@ -495,7 +577,8 @@ cat <<EOF
  项目版本    : $PROJECT_VERSION (Pi $PI_INSTALLED)
  主目录      : $PI_OPS_HOME
  模型(默认) : $DEFAULT_ID  (llama-server 127.0.0.1:$PORT,带 api-key)
- 备选模型    : $(ls "$PI_OPS_HOME/models/" | tr '\n' ' ')
+ 模型目录    : $MODEL_DIR
+ 备选模型    : $(ls "$MODEL_DIR/" | tr '\n' ' ')
  用法        : pi-ops                    # 交互 TUI
                pi-ops -p "查一下磁盘"    # 单次问答
  切换模型    : pi-ops --model llama-cpp/qwen3.5-4b
@@ -514,7 +597,8 @@ cat <<EOF
  Version     : $PROJECT_VERSION (Pi $PI_INSTALLED)
  Home        : $PI_OPS_HOME
  Model (def) : $DEFAULT_ID  (llama-server 127.0.0.1:$PORT, with api-key)
- Models      : $(ls "$PI_OPS_HOME/models/" | tr '\n' ' ')
+ Model dir   : $MODEL_DIR
+ Models      : $(ls "$MODEL_DIR/" | tr '\n' ' ')
  Usage       : pi-ops                    # interactive TUI
                pi-ops -p "check disk"   # one-shot query
  Switch model: pi-ops --model llama-cpp/qwen3.5-4b

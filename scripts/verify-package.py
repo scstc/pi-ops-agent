@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify a pi-ops-agent .tar.gz or self-extracting .run package in a stream."""
+"""Verify a program .run, standalone GGUF, or legacy complete package."""
 
 from __future__ import print_function
 
@@ -249,12 +249,35 @@ def open_package(path):
     raise PackageError("package must end in .tar.gz or .run")
 
 
-def verify(path, model):
+def verify_model(path, model):
+    if path.name != model + ".gguf" or not path.is_file():
+        raise PackageError("expected model file {}.gguf".format(model))
+    checksum = path.with_name(path.name + ".sha256")
+    if not checksum.is_file():
+        raise PackageError("missing model checksum: {}".format(checksum))
+    manifest = parse_manifest(checksum.read_bytes())
+    if set(manifest) != {path.name}:
+        raise PackageError("model checksum must contain only {}".format(path.name))
+    with path.open("rb") as source:
+        digest, prefix = hash_member(source, path.stat().st_size, str(path))
+    if prefix != b"GGUF":
+        raise PackageError("model does not start with GGUF magic")
+    if not hmac.compare_digest(manifest[path.name], digest):
+        raise PackageError("SHA-256 mismatch: {}".format(path.name))
+
+
+def verify(path, model=None, program=False):
     if not path.is_file():
         raise PackageError("package not found: {}".format(path))
+    if path.suffix == ".gguf" and not program:
+        return verify_model(path, model)
     required, seen = set(REQUIRED_FILES), set()
+    if program:
+        required.remove("bundle/default-model.txt")
+        required.add("bundle/package-kind.txt")
     bundle_hashes, manifest = {}, None
     ggufs, default_model = [], None
+    package_kind = None
     node_archives, llama_archives = 0, 0
 
     raw, offset = open_package(path)
@@ -298,6 +321,10 @@ def verify(path, model):
                     default_model = small_file(member_file, member.size, name)
                     bundle_hashes[bundle_relative(name)] = hashlib.sha256(default_model).hexdigest()
                     continue
+                if name == "bundle/package-kind.txt":
+                    package_kind = small_file(member_file, member.size, name)
+                    bundle_hashes[bundle_relative(name)] = hashlib.sha256(package_kind).hexdigest()
+                    continue
                 if name.startswith("bundle/node-v") and name.endswith("-linux-x64.tar.xz"):
                     node_archives += 1
                     bundle_hashes[bundle_relative(name)] = validate_node_archive(member_file, member.size, name)
@@ -331,14 +358,18 @@ def verify(path, model):
         raise PackageError("missing required file(s): " + ", ".join(missing))
     if manifest is None:
         raise PackageError("missing bundle/MANIFEST.sha256")
-    expected_gguf = model + ".gguf"
-    if len(ggufs) != 1 or ggufs[0][0] != expected_gguf:
-        found = ", ".join(name for name, _ in ggufs) or "none"
-        raise PackageError("expected exactly bundle/{}; found: {}".format(expected_gguf, found))
-    if ggufs[0][1] != b"GGUF":
-        raise PackageError("bundle/{} does not start with GGUF magic".format(expected_gguf))
-    if default_model != (model + "\n").encode("ascii"):
-        raise PackageError("bundle/default-model.txt must be exactly {!r} followed by LF".format(model))
+    if program:
+        if package_kind != b"program\n" or ggufs or default_model is not None:
+            raise PackageError("program package must contain package-kind=program and no bundled model/default")
+    else:
+        expected_gguf = model + ".gguf"
+        if len(ggufs) != 1 or ggufs[0][0] != expected_gguf:
+            found = ", ".join(name for name, _ in ggufs) or "none"
+            raise PackageError("expected exactly bundle/{}; found: {}".format(expected_gguf, found))
+        if ggufs[0][1] != b"GGUF":
+            raise PackageError("bundle/{} does not start with GGUF magic".format(expected_gguf))
+        if default_model != (model + "\n").encode("ascii"):
+            raise PackageError("bundle/default-model.txt must be exactly {!r} followed by LF".format(model))
     if node_archives != 1 or llama_archives != 1:
         raise PackageError("expected one node and one llama runtime archive; found node={}, llama={}".format(node_archives, llama_archives))
     if set(manifest) != set(bundle_hashes):
@@ -358,14 +389,16 @@ def verify(path, model):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("package", type=Path, help="package .tar.gz or self-extracting .run")
-    parser.add_argument("--model", required=True, choices=MODELS, help="model contained in the package")
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--model", choices=MODELS, help="standalone GGUF or model contained in a legacy package")
+    mode.add_argument("--program", action="store_true", help="program package without model weights")
     arguments = parser.parse_args(argv)
     try:
-        verify(arguments.package, arguments.model)
+        verify(arguments.package, arguments.model, arguments.program)
     except PackageError as exc:
         print("[verify-package] FAILED: {}".format(exc), file=sys.stderr)
         return 1
-    print("[verify-package] OK: {} ({})".format(arguments.package, arguments.model))
+    print("[verify-package] OK: {} ({})".format(arguments.package, "program" if arguments.program else arguments.model))
     return 0
 
 

@@ -1,12 +1,12 @@
 # pi-ops-agent
 
-面向内网和客户现场的离线运维 Agent。它把 Node、pi、llama.cpp 和一个本地 Qwen 或 Spark GGUF 模型封装为无需 root、安装期间不访问网络的交付包；安装后可在目标服务器上用自然语言查询和分析运维问题。
+面向内网和客户现场的离线运维 Agent。程序包包含 Node、pi、llama.cpp 和运维扩展，Qwen / Spark 的 GGUF 模型独立交付；无需 root，安装期间不访问网络。首次安装配套提供程序和一个模型，后续升级程序复用已安装模型。
 
 默认提示词要求只处理当前问题：问候不巡检，问内存只查询内存。只读工具包括 `ops_memory_usage`、`ops_disk_usage` 和 `ops_service_status`；内存工具直接返回带 MiB 单位的数值。修改提示词或扩展后，在已有交互界面执行 `/reload`，再用 `/new` 开新会话。0.8B 实测仍可能出现工具选择或指令遵循不稳定，不能把提示词约束等同于行为保证，正式运维应对照验证更大的模型。
 
 Qwen 3.5 的非思考配置会向 llama.cpp 显式发送 `enable_thinking: false`，避免只在 Pi 界面关闭思考、模型仍生成隐藏思考内容。2026-10-22 在 dev64（麒麟 V10、CPU）实测：Qwen 0.8B 的 64,033 token 无缓存输入耗时约 371 秒；66,011 token 请求明确返回窗口超限，之后短请求成功返回。大窗口容量与交互延迟需分别验收；Pi 自动压缩与溢出重试尚未完成该机实测。
 
-当前项目版本为 **26.4.1**（仓库根目录 `VERSION`），内部 Pi 依赖版本为 **1.3.0**。构建产物使用 `pi-ops-agent-v26.4.1-<发行版>-<模型>-x64` 命名；安装成功后可用 `cat ~/pi-ops-agent/VERSION` 核对项目版本。每个 Release 资产只包含一个模型和一个目标发行版，文件名会写明二者。26.4.1 起，Actions 产物与 Release 仅上传完整 `.run` 和 `.run.sha256`，不重复上传同一 payload 的 `.tar.gz`；模型、运行环境和安装步骤不变。离线包目前面向 x86_64 的麒麟 V10 / RHEL 8 系环境。
+当前项目版本为 **26.4.1**（仓库根目录 `VERSION`），内部 Pi 依赖版本为 **1.3.0**。新构建的交付文件为通用程序 `pi-ops-agent-v26.4.1-<发行版>-x64.run`、独立模型 `<模型ID>.gguf`，以及各自的 `.sha256`。所有模型共用一份程序包，不重复上传 `.tar.gz`；旧整包仍可安装。安装后可用 `cat ~/pi-ops-agent/VERSION` 核对项目版本。程序包目前面向 x86_64 的麒麟 V10 / RHEL 8 系环境，GGUF 不绑定程序版本或发行版。
 
 ## 适用范围
 
@@ -19,7 +19,7 @@ Qwen 3.5 的非思考配置会向 llama.cpp 显式发送 `enable_thinking: false
 | 磁盘 | 安装目录至少 5 GB 可用空间；运行 `.run` 时临时目录还需容纳一份解压内容 |
 | 0.8B 档 | 用于内存更紧的轻量问答和巡检；最低可用内存尚未完成实测，预检会告警后继续由安装冒烟验证 |
 
-26.4.1 在已发布的 v26.3.11 两档 Qwen 模型基础上新增 Spark，离线包分别构建：
+26.4.1 在已发布的 v26.3.11 两档 Qwen 模型基础上新增 Spark，独立提供以下模型：
 
 | 模型 | 使用建议 | 已知边界 |
 | --- | --- | --- |
@@ -27,7 +27,7 @@ Qwen 3.5 的非思考配置会向 llama.cpp 显式发送 `enable_thinking: false
 | `qwen3.5-2b` | 默认推荐，用于受限机器上的常规运维问答 | 多轮复杂任务的归因深度有限，可能出现小模型幻觉 |
 | `spark-x2.5-1.7b` | 新增可选模型，对应 Ollama `SparkLLM/Spark-X2.5-1.7B:latest` 的 BF16 权重 | 官方 GGUF 文件约 3.42 GB；现场最低内存和运维效果需实测 |
 
-`2B`、`0.8B` 是模型参数档位，不能当作交付包大小。2B 使用的 Q4_K_M GGUF 模型文件实测约 1.4 GB；Release 包还包含 Node、pi、llama.cpp 和脚本，实际下载大小以 Release 资产显示为准。
+`2B`、`0.8B` 是模型参数档位，不能当作交付包大小。2B 使用的 Q4_K_M GGUF 模型文件实测约 1.4 GB；首次下载量为程序加所选模型，后续只升级程序时无需重新下载模型。更换模型只需提供新的 GGUF 和校验文件。
 
 历史 WSL 纯 CPU 评测中，2B 在五个真实运维任务的两轮测试为 5/5，能定位 `docker-proxy` 和 PID，但归因较浅。仓库中的 `tests/eval-ops.sh [模型id]` 可复现评测；不要将该结果视为所有现场环境的性能承诺。
 
@@ -37,33 +37,32 @@ Qwen 3.5 的非思考配置会向 llama.cpp 显式发送 `enable_thinking: false
 
 ## Quick start：联网备货到离线首次问答
 
-下面以 `kylin-v10` 的 2B 包为例。0.8B 只需把文件名中的 `qwen3.5-2b` 换成 `qwen3.5-0.8b`。
+下面以 `kylin-v10` 程序搭配 0.8B 模型为例，2B / Spark 只需替换 GGUF 文件名。首次安装需要四个文件：程序 `.run`、模型 `.gguf` 及各自校验文件。历史整包的文件名仍包含模型 ID，可直接执行原 `.run`。
 
 ### 1. 在联网 Windows 机器下载并校验
 
-需要已登录 GitHub CLI 的 PowerShell。下载 `.run` 和同名校验文件，然后比较 SHA-256：
+需要已登录 GitHub CLI。先用 `gh run list -R scstc/pi-ops-agent` 找到新构建的运行 ID（`RUN_ID`），分别下载通用程序与所选模型到同一目录；仅更新源代码不会修改已有历史产物：
 
 ```powershell
-gh release download v26.3.11 -R scstc/pi-ops-agent `
-  -p "pi-ops-agent-v26.3.11-kylin-v10-qwen3.5-2b-x64.run" `
-  -p "pi-ops-agent-v26.3.11-kylin-v10-qwen3.5-2b-x64.run.sha256"
-
-$file = "pi-ops-agent-v26.3.11-kylin-v10-qwen3.5-2b-x64.run"
-$expected = (Get-Content "$file.sha256").Split()[0].ToLower()
-$actual = (Get-FileHash $file -Algorithm SHA256).Hash.ToLower()
-if ($actual -ne $expected) { throw "SHA-256 校验失败：请重新下载 $file" }
+gh run download RUN_ID -R scstc/pi-ops-agent -n program-kylin-v10 -D packages
+gh run download RUN_ID -R scstc/pi-ops-agent -n model-kylin-v10-qwen3.5-0.8b -D packages
+foreach ($file in @("packages/pi-ops-agent-v26.4.1-kylin-v10-x64.run", "packages/qwen3.5-0.8b.gguf")) {
+  $expected = (Get-Content "$file.sha256").Split()[0].ToLower()
+  $actual = (Get-FileHash $file -Algorithm SHA256).Hash.ToLower()
+  if ($actual -ne $expected) { throw "SHA-256 校验失败：$file" }
+}
 ```
 
 也可在联网 Linux 机器使用：
 
 ```bash
-gh release download v26.3.11 -R scstc/pi-ops-agent \
-  -p 'pi-ops-agent-v26.3.11-kylin-v10-qwen3.5-2b-x64.run' \
-  -p 'pi-ops-agent-v26.3.11-kylin-v10-qwen3.5-2b-x64.run.sha256'
-sha256sum -c pi-ops-agent-v26.3.11-kylin-v10-qwen3.5-2b-x64.run.sha256
+gh run download RUN_ID -R scstc/pi-ops-agent -n program-kylin-v10 -D packages
+gh run download RUN_ID -R scstc/pi-ops-agent -n model-kylin-v10-qwen3.5-0.8b -D packages
+cd packages
+sha256sum -c *.sha256
 ```
 
-把 `.run` 和同名 `.sha256` 两个文件拷贝到现场服务器，例如通过 U 盘或受控的内网文件传输。无需在现场服务器安装 GitHub CLI、Node、npm、Ollama 或编译工具。
+把这四个文件拷贝到现场服务器。无需在现场服务器安装 GitHub CLI、Node、npm、Ollama 或编译工具。
 
 ### 2. 在离线服务器安装
 
@@ -71,11 +70,24 @@ sha256sum -c pi-ops-agent-v26.3.11-kylin-v10-qwen3.5-2b-x64.run.sha256
 
 ```bash
 export PI_OPS_HOME="${PI_OPS_HOME:-$HOME/pi-ops-agent}"
-sha256sum -c pi-ops-agent-v26.3.11-kylin-v10-qwen3.5-2b-x64.run.sha256
-bash ./pi-ops-agent-v26.3.11-kylin-v10-qwen3.5-2b-x64.run
+sha256sum -c *.sha256
+bash ./pi-ops-agent-v26.4.1-kylin-v10-x64.run \
+  --model ./qwen3.5-0.8b.gguf --model-dir /data/pi-models
 ```
 
-`.run` 会先校验内置载荷，再解压、运行 `env-check.sh` 和 `install.sh`，最后删除临时目录。安装器还会校验 `bundle/MANIFEST.sha256`、启动本地模型服务，并执行 chat、pi 端到端和危险删除拦截的冒烟测试。整个安装过程不下载依赖。
+`.run` 会校验内置载荷并解压，随后运行预检与安装器，最后删除临时目录。安装器要求外部 GGUF 的同名 `.sha256`，在更新运行环境前校验模型，再原子替换目标权重文件；首次缺少模型时明确报错。安装后启动模型并执行冒烟检查，整个过程不下载依赖。0.8B 默认最多使用 8 个推理线程，避免 dev64 上 16 线程的性能倒退；可通过模型服务的 `PI_OPS_THREADS` / `PI_OPS_THREADS_BATCH` 环境变量覆盖。
+
+`--model` 是待导入的模型来源，`--model-dir` 是实际保存和加载模型的目录，需当前用户有读写权限；不指定时默认 `~/pi-ops-agent/models`。也可设置 `PI_OPS_MODEL_DIR=/data/pi-models`。目录会记录在 `$PI_OPS_HOME/model-dir`，程序升级会自动复用，无需每次重填。
+
+模型已在目标目录时，可直接用 `--model-dir /data/pi-models --model-id qwen3.5-0.8b`，无需再拷贝一份权重。更改目录只会在新目录选择或导入模型，不会自动迁移、删除旧目录的模型。卸载程序会保留程序目录之外的模型；默认程序目录内的模型仍随程序卸载。
+
+已有安装只升级程序时，不传 `--model`，会保留当前模型目录、模型选择和已有权重；不需要携带原始模型下载文件：
+
+```bash
+bash ./pi-ops-agent-v26.4.1-kylin-v10-x64.run
+```
+
+更换模型时使用 `--model ./qwen3.5-2b.gguf`；选择已安装的模型可用 `--model-id qwen3.5-2b`。安装了多个模型但没有有效默认配置时，必须显式选择。程序与模型分开降低后续升级的传输量，首次安装总量和模型运行内存不会因此减少。
 
 首次安装后，当前 shell 的 PATH 不会自动刷新。请先使用绝对路径完成第一次问答：
 

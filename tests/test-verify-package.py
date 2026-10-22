@@ -75,6 +75,35 @@ def make_package(path, model=MODEL, mutate=None, run=False, corrupt_manifest=Fal
 
 
 class VerifyPackageTests(unittest.TestCase):
+    def test_program_package_excludes_model_and_preserves_runtime_validation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            package = Path(directory) / 'program.run'
+            def split(files):
+                files.pop('bundle/default-model.txt')
+                files.pop('bundle/' + MODEL + '.gguf')
+                files['bundle/package-kind.txt'] = b'program\n'
+            make_package(package, mutate=split, run=True)
+            result = subprocess.run([sys.executable, str(VERIFY), '--program', str(package)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotEqual(self.check(package).returncode, 0)
+            make_package(package, run=True)
+            result = subprocess.run([sys.executable, str(VERIFY), '--program', str(package)], capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0, 'program mode must not silently accept bundled weights')
+
+    def test_standalone_model_requires_matching_checksum_and_gguf(self):
+        with tempfile.TemporaryDirectory() as directory:
+            model = Path(directory) / (MODEL + '.gguf')
+            checksum = model.with_name(model.name + '.sha256')
+            model.write_bytes(b'GGUFweight')
+            self.assertNotEqual(self.check(model).returncode, 0)
+            checksum.write_text(hashlib.sha256(model.read_bytes()).hexdigest() + '  ' + model.name + '\n')
+            self.assertEqual(self.check(model).returncode, 0)
+            model.write_bytes(b'GGUFbroken')
+            self.assertNotEqual(self.check(model).returncode, 0)
+            model.write_bytes(b'not-a-model')
+            checksum.write_text(hashlib.sha256(model.read_bytes()).hexdigest() + '  ' + model.name + '\n')
+            self.assertNotEqual(self.check(model).returncode, 0)
+
     def test_accepts_forward_library_symlink_chain(self):
         with tempfile.TemporaryDirectory() as directory:
             package = Path(directory) / "package.tar.gz"

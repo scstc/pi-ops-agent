@@ -1,9 +1,9 @@
 name: build-offline-bundles
 
 # 多发行版离线安装包:在目标发行版容器内源码编译 llama.cpp(产物天然匹配该发行版
-# glibc,规避预编译包门槛漂移),按发行版 × 模型组装完整离线包,并在同容器内跑
-# install.sh 冒烟(容器无 systemd,顺带覆盖 nohup 兜底路径)。
-# 产物:workflow artifact(bundle-<distro>-<model>);push v* tag 时自动挂 GitHub Release。
+# glibc,规避预编译包门槛漂移)。程序按发行版通用，模型独立交付；verify job
+# 用两部分文件在干净容器中验收安装、升级和冷启动。
+# 产物:program-<distro> / model-<distro>-<model>；push v* tag 时挂 GitHub Release。
 on:
   push:
     branches: [main]
@@ -92,13 +92,23 @@ jobs:
           GGUF_CACHE: ${{ github.workspace }}/.ci-gguf-cache/${{ matrix.model.id }}.gguf
           PI_OPS_VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
 
-      - name: 上传产物
+      - name: 上传通用程序包（各模型共用一份）
+        if: matrix.model.id == 'qwen3.5-2b'
         uses: actions/upload-artifact@v4
         with:
-          name: bundle-${{ matrix.target.slug }}-${{ matrix.model.id }}
+          name: program-${{ matrix.target.slug }}
           path: |
             dist/*.run
             dist/*.run.sha256
+          if-no-files-found: error
+          retention-days: 7
+      - name: 上传独立模型
+        uses: actions/upload-artifact@v4
+        with:
+          name: model-${{ matrix.target.slug }}-${{ matrix.model.id }}
+          path: |
+            dist/*.gguf
+            dist/*.gguf.sha256
           if-no-files-found: error
           retention-days: 7
       - name: 保存完整编译诊断
@@ -137,7 +147,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          name: bundle-${{ matrix.target.slug }}-${{ matrix.model }}
+          name: program-${{ matrix.target.slug }}
+          path: downloaded
+      - uses: actions/download-artifact@v4
+        with:
+          name: model-${{ matrix.target.slug }}-${{ matrix.model }}
           path: downloaded
       - name: 检查真实产物并用普通用户离线安装
         run: bash scripts/ci-verify.sh downloaded '${{ matrix.model }}'
@@ -163,7 +177,12 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: dist
-          pattern: 'bundle-*'
+          pattern: 'program-*'
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: 'model-*'
           merge-multiple: true
       - uses: softprops/action-gh-release@v2
         with:
@@ -176,7 +195,8 @@ jobs:
         run: |
           gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --dir published
           (cd published && sha256sum -c *.sha256)
+          python3 scripts/verify-package.py --program published/pi-ops-agent-"$GITHUB_REF_NAME"-kylin-v10-x64.run
           for model in qwen3.5-2b qwen3.5-0.8b spark-x2.5-1.7b; do
-            python3 scripts/verify-package.py --model "$model" published/pi-ops-agent-"$GITHUB_REF_NAME"-kylin-v10-"$model"-x64.run
+            python3 scripts/verify-package.py --model "$model" published/"$model".gguf
           done
           gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false --latest

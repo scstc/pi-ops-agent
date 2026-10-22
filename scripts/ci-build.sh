@@ -3,8 +3,8 @@
 # 与 fetch-bundle.sh(联网机本地备货,国内镜像源)的区别:
 #   - llama.cpp 源码编译 → 产物天然匹配当前容器/发行版的 glibc(规避预编译包门槛漂移)
 #   - 下载走官方源(GH runner 在海外)
-#   - 每次只打 CI 指定的一个模型,控制产物体积;打完在同一容器内跑 install.sh 冒烟
-#      (容器无 systemd → 自动走 nohup 兜底分支,顺带覆盖该路径)
+#   - 输出通用程序 .run 与 CI 指定的独立 GGUF，模型不进入程序载荷
+#   - 独立 verify job 用真实交付文件验收离线安装和升级
 #
 # 环境变量:LLAMA_TAG(默认 b10901)、NODE_VER(默认 22.20.0)、PI_OPS_VERSION(包版本)、
 #          DISTRO_SLUG(必填,如 ubuntu-22.04)、BUNDLE_MODEL_ID(必填,如 qwen3.5-2b)、
@@ -146,7 +146,10 @@ else
     cp "$MODEL_GGUF" "$GGUF_CACHE"
   fi
 fi
-printf '%s\n' "$BUNDLE_MODEL_ID" > "$BUNDLE/default-model.txt"
+# 模型独立交付，不随程序版本重复打包；程序包在所有模型间通用。
+mv "$MODEL_GGUF" "$DIST/$BUNDLE_MODEL_ID.gguf"
+(cd "$DIST" && sha256sum "$BUNDLE_MODEL_ID.gguf" > "$BUNDLE_MODEL_ID.gguf.sha256")
+printf 'program\n' > "$BUNDLE/package-kind.txt"
 
 # ---------- 5. MANIFEST ----------
 ( cd "$BUNDLE" \
@@ -154,16 +157,15 @@ printf '%s\n' "$BUNDLE_MODEL_ID" > "$BUNDLE/default-model.txt"
    | sort -z | xargs -0 sha256sum > MANIFEST.sha256 )
 
 # ---------- 6. 外层交付包(仓库脚本 + assets + bundle) ----------
-OUT="$DIST/pi-ops-agent-$VER-$DISTRO_SLUG-$BUNDLE_MODEL_ID-x64.tar.gz"
+OUT="$W/program-payload.tar.gz"
 tar -czf "$OUT" -C "$ROOT" install.sh uninstall.sh env-check.sh assets README.md LICENSE VERSION -C "$W" bundle
-( cd "$DIST" && sha256sum "$(basename "$OUT")" > "$(basename "$OUT").sha256" )
 
-# 自解压交付包:仅依赖目标机已有的 bash / tar / mktemp,解压后复用原安装器与其 MANIFEST 校验。
+# 自解压程序包:解压后复用安装器与其 MANIFEST 校验，模型通过 --model 导入或从已有目录加载。
 # 安装器退出(成功或失败)后由 trap 清理临时目录,不留下模型或脚本副本。
-RUN="$DIST/pi-ops-agent-$VER-$DISTRO_SLUG-$BUNDLE_MODEL_ID-x64.run"
+RUN="$DIST/pi-ops-agent-$VER-$DISTRO_SLUG-x64.run"
 cat > "$RUN.part" <<'EOF'
 #!/usr/bin/env bash
-# pi-ops-agent self-extracting installer. Payload is the matching tar.gz package.
+# pi-ops-agent self-extracting installer. Model weights are supplied separately.
 set -euo pipefail
 
 payload_line="$(awk '/^__PI_OPS_PAYLOAD_BELOW__$/{print NR + 1; exit}' "$0")"
@@ -185,9 +187,12 @@ if ! tail -n +"$payload_line" "$0" | tar -xzf - -C "$tmpdir"; then
   exit 1
 fi
 (
-  cd "$tmpdir"
+  if [ "${1:-}" = --help ] || [ "${1:-}" = -h ]; then
+    "$tmpdir/install.sh" "$@"
+    exit 0
+  fi
   set +e
-  ./env-check.sh
+  "$tmpdir/env-check.sh" "$@"
   env_check_status=$?
   set -e
   case "$env_check_status" in
@@ -195,7 +200,7 @@ fi
     2) echo "[pi-ops] environment check has optional warnings; continuing" >&2 ;;
     *) exit "$env_check_status" ;;
   esac
-  ./install.sh "$@"
+  "$tmpdir/install.sh" "$@"
 )
 exit 0
 __PI_OPS_PAYLOAD_BELOW__

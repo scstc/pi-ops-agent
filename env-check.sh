@@ -7,6 +7,16 @@ set -uo pipefail
 FAIL=0; WARN=0
 CHECK_ROOT="$(cd "$(dirname "$0")" && pwd)"
 CHECK_MODEL="$(tr -d '\r\n' < "$CHECK_ROOT/bundle/default-model.txt" 2>/dev/null || true)"
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --model) [ "$#" -ge 2 ] || break; CHECK_MODEL="$(basename "$2" .gguf)"; shift 2 ;;
+    --model-id) [ "$#" -ge 2 ] || break; CHECK_MODEL="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+if [ -z "$CHECK_MODEL" ] && [ -x "${PI_OPS_HOME:-$HOME/pi-ops-agent}/node/bin/node" ] && [ -f "$HOME/.pi/agent/settings.json" ]; then
+  CHECK_MODEL="$("${PI_OPS_HOME:-$HOME/pi-ops-agent}/node/bin/node" -e 'try { console.log(require(process.argv[1]).defaultModel || ""); } catch {}' "$HOME/.pi/agent/settings.json" 2>/dev/null || true)"
+fi
 
 IS_UTF8=0
 case "${LC_ALL:-${LANG:-}}" in *UTF-8*|*utf8*|*UTF8*) IS_UTF8=1 ;; esac

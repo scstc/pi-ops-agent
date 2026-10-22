@@ -13,6 +13,60 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class PackagingTests(unittest.TestCase):
+    def test_split_install_imports_verified_model_and_upgrades_without_model_copy(self):
+        source = (ROOT / "install.sh").read_text(encoding="utf-8")
+        preflight = source.split('# 分体包显式导入模型', 1)[1].split('# ---------- 1. 产物完整性', 1)[0]
+        preflight = '# 分体包显式导入模型' + preflight
+        model_stage = source.split('# ---------- 4. 模型 GGUF ----------\n', 1)[1].split('# ---------- 5.', 1)[0]
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            bundle, home, agent = folder / 'bundle', folder / 'runtime', folder / 'agent'
+            models = folder / 'independent-weights'
+            bundle.mkdir(); agent.mkdir()
+            (bundle / 'package-kind.txt').write_text('program\n')
+            script = f'set -euo pipefail\nBUNDLE="{bundle}"\nPI_OPS_HOME="{home}"\nPI_DIR="{agent}"\nNODE=node\nlog() {{ :; }}\ndie() {{ echo "$*" >&2; exit 1; }}\n'
+            script += preflight + '\nprintf checked > "' + str(folder / 'checked') + '"\n' + model_stage
+            script += '\nprintf "%s\\n" "$DEFAULT_ID"\n'
+            def run(*args):
+                return subprocess.run(['bash', '-c', script, '--', *args], cwd=directory, capture_output=True, text=True)
+            self.assertNotEqual(run().returncode, 0)
+            self.assertFalse((folder / 'checked').exists(), 'fresh installs must fail before changing the runtime')
+            incoming = folder / 'models with spaces'
+            incoming.mkdir()
+            model = incoming / 'qwen3.5-0.8b.gguf'
+            data = b'GGUFverified-weight'
+            model.write_bytes(data)
+            relative = 'models with spaces/' + model.name
+            self.assertNotEqual(run('--model', relative).returncode, 0)
+            self.assertFalse((folder / 'checked').exists())
+            checksum = model.with_name(model.name + '.sha256')
+            checksum.write_text('0' * 64 + '  ' + model.name + '\n')
+            self.assertNotEqual(run('--model', relative).returncode, 0)
+            self.assertFalse((folder / 'checked').exists())
+            checksum.write_text(hashlib.sha256(data).hexdigest() + '  ' + model.name + '\n')
+            result = run('--model', relative, '--model-dir', str(models))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), 'qwen3.5-0.8b')
+            installed = models / model.name
+            self.assertEqual(installed.read_bytes(), data)
+            self.assertFalse((home / 'models').exists(), 'weights must stay outside the program directory')
+            self.assertEqual((home / 'model-dir').read_text().strip(), str(models))
+            inode = installed.stat().st_ino
+            (agent / 'settings.json').write_text(json.dumps({'defaultProvider': 'llama-cpp', 'defaultModel': 'qwen3.5-0.8b'}))
+            (models / 'qwen3.5-2b.gguf').write_bytes(b'GGUFother')
+            model.unlink(); checksum.unlink()
+            result = run()
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), 'qwen3.5-0.8b', 'program upgrade must retain the selected model')
+            self.assertEqual(installed.read_bytes(), data)
+            self.assertEqual(installed.stat().st_ino, inode, 'program upgrades must reuse model files')
+            result = run('--model-id', 'qwen3.5-2b')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), 'qwen3.5-2b')
+            self.assertNotEqual(run('--model-id', 'missing').returncode, 0)
+            (agent / 'settings.json').unlink()
+            self.assertNotEqual(run().returncode, 0, 'ambiguous installed models require explicit selection')
+
     def test_cli_exit_does_not_wait_for_idle_refresh_stdout(self):
         source = (ROOT / "install.sh").read_text(encoding="utf-8")
         wrapper = source.split('cat > "$PI_OPS_HOME/bin/pi-ops" <<EOF\n', 1)[1].split('\nEOF\n', 1)[0]
@@ -84,7 +138,7 @@ class PackagingTests(unittest.TestCase):
             fake_llama.chmod(0o755)
             for model_id in expected:
                 (folder / "models" / (model_id + ".gguf")).touch()
-            script = f'set -euo pipefail\nPI_OPS_HOME="{folder}"\nPI_DIR="{folder}"\nPORT=8787\nLLAMA_KEY=test-key\n' + policy + models_block
+            script = f'set -euo pipefail\nPI_OPS_HOME="{folder}"\nMODEL_DIR="{folder}/models"\nPI_DIR="{folder}"\nPORT=8787\nLLAMA_KEY=test-key\n' + policy + models_block
             subprocess.run(["bash", "-c", script], check=True)
             models = json.loads((folder / "models.json").read_text())["providers"]["llama-cpp"]["models"]
             self.assertEqual({model["id"]: model["contextWindow"] for model in models}, expected)
@@ -97,7 +151,7 @@ class PackagingTests(unittest.TestCase):
             # The generated launcher must stay aligned even after switching MODEL
             # between a previously installed Qwen and a new Spark package.
             for default_id in ("spark-x2.5-1.7b", "qwen3.5-2b"):
-                script = f'set -euo pipefail\nPI_OPS_HOME="{folder}"\nLLAMA_DIR="{folder}"\nLLAMA_BIN="{fake_llama}"\nKEY_FILE="{folder}/llama.key"\nPORT=8787\nDEFAULT_GGUF="{folder}/models/{default_id}.gguf"\n' + policy
+                script = f'set -euo pipefail\nPI_OPS_HOME="{folder}"\nMODEL_DIR="{folder}/models"\nLLAMA_DIR="{folder}"\nLLAMA_BIN="{fake_llama}"\nKEY_FILE="{folder}/llama.key"\nPORT=8787\nDEFAULT_GGUF="{folder}/models/{default_id}.gguf"\n' + policy
                 script += "cat > \"$PI_OPS_HOME/llama-run\" <<EOF\n" + launcher_block + "\nEOF\n"
                 subprocess.run(["bash", "-c", script], check=True)
                 for model_id, context in expected.items():
@@ -106,6 +160,13 @@ class PackagingTests(unittest.TestCase):
                         args = subprocess.check_output(["bash", "-c", run], text=True).splitlines()
                         self.assertEqual(int(args[args.index("-c") + 1]), context)
                         self.assertEqual(args[args.index("--parallel") + 1], "1")
+                        expected_threads = min(8, int(subprocess.check_output(["nproc"], text=True))) if model_id == "qwen3.5-0.8b" else -1
+                        self.assertEqual(int(args[args.index("--threads") + 1]), expected_threads)
+                        self.assertEqual(int(args[args.index("--threads-batch") + 1]), expected_threads)
+                override = f'PI_OPS_THREADS=4 PI_OPS_THREADS_BATCH=2 MODEL="{folder}/models/qwen3.5-0.8b.gguf" bash "{folder}/llama-run"'
+                args = subprocess.check_output(["bash", "-c", override], text=True).splitlines()
+                self.assertEqual(args[args.index("--threads") + 1], "4")
+                self.assertEqual(args[args.index("--threads-batch") + 1], "2")
             settings_file = folder / "settings.json"
             settings_file.write_text(json.dumps({"theme": "dark", "compaction": {"enabled": False, "keepRecentTokens": 20000}}))
             subprocess.run(["node", "-e", code, str(settings_file), "spark-x2.5-1.7b"], check=True)
@@ -129,7 +190,7 @@ class PackagingTests(unittest.TestCase):
                 with tarfile.open(fileobj=payload, mode="w:gz") as archive:
                     for name, script in {
                         "env-check.sh": f"#!/bin/bash\nexit {precheck}\n",
-                        "install.sh": f"#!/bin/bash\nprintf installed > '{folder}/called'\nexit {install}\n",
+                        "install.sh": f"#!/bin/bash\nprintf installed > '{folder}/called'\nprintf '%s\\n' \"$PWD\" \"$@\" > '{folder}/args'\nexit {install}\n",
                     }.items():
                         data = script.encode()
                         entry = tarfile.TarInfo(name)
@@ -139,10 +200,14 @@ class PackagingTests(unittest.TestCase):
                 checked_header = header.replace('__PI_OPS_PAYLOAD_SHA256__', hashlib.sha256(payload.getvalue()).hexdigest())
                 installer.write_bytes(checked_header.encode() + payload.getvalue())
                 import os
-                result = subprocess.run(["bash", str(installer)], env={**os.environ, "TMPDIR": directory}, capture_output=True)
+                result = subprocess.run(["bash", str(installer), "--model", "models with spaces/qwen3.5-0.8b.gguf"],
+                                        cwd=directory, env={**os.environ, "TMPDIR": directory}, capture_output=True)
                 self.assertEqual(result.returncode, expected, result.stderr.decode())
                 self.assertEqual((folder / "called").exists(), precheck != 1)
                 self.assertFalse(list(folder.glob(".pi-ops-install.*")))
+                if precheck != 1:
+                    self.assertEqual((folder / "args").read_text().splitlines(),
+                                     [directory, "--model", "models with spaces/qwen3.5-0.8b.gguf"])
                 if precheck == 0 and install == 0:
                     (folder / "called").unlink()
                     installer.write_bytes(installer.read_bytes()[:-8])
@@ -167,7 +232,7 @@ class PackagingTests(unittest.TestCase):
 
     def test_reinstall_repairs_same_size_and_larger_corrupt_models(self):
         source = (ROOT / "install.sh").read_text(encoding="utf-8")
-        copying = source.split('for g in "$BUNDLE"/*.gguf; do\n', 1)[1].split('\ndone\n', 1)[0]
+        copying = source.split('for g in "$BUNDLE"/*.gguf "${MODEL_FILE:-}"; do\n', 1)[1].split('\ndone\n', 1)[0]
         with tempfile.TemporaryDirectory() as directory:
             folder = Path(directory)
             bundle, models = folder / "bundle", folder / "models"
@@ -177,7 +242,7 @@ class PackagingTests(unittest.TestCase):
             (bundle / name).write_bytes(b'GGUFgood')
             for old in [b'GGUFxxxx', b'GGUFxxxxxxxxxxxx']:
                 (models / name).write_bytes(old)
-                script = f'set -eu\nBUNDLE="{bundle}"\nPI_OPS_HOME="{folder}"\nlog() {{ :; }}\ndie() {{ exit 1; }}\ngguf_ok() {{ :; }}\ng="$BUNDLE/{name}"\n' + copying
+                script = f'set -eu\nBUNDLE="{bundle}"\nPI_OPS_HOME="{folder}"\nMODEL_DIR="{models}"\nlog() {{ :; }}\ndie() {{ exit 1; }}\ngguf_ok() {{ :; }}\ng="$BUNDLE/{name}"\n' + copying
                 result = subprocess.run(['bash', '-c', script], capture_output=True)
                 self.assertEqual(result.returncode, 0, result.stderr.decode())
                 self.assertEqual((models / name).read_bytes(), b'GGUFgood')
@@ -196,7 +261,7 @@ class PackagingTests(unittest.TestCase):
             (bundle / "spark-x2.5-1.7b.gguf").touch()
             for declaration, expected in [("qwen3.5-0.8b", 0), ("spark-x2.5-1.7b", 0), ("missing", 1)]:
                 (bundle / "default-model.txt").write_text(declaration)
-                script = f'set -eu\nBUNDLE="{bundle}"\nPI_OPS_HOME="{folder}"\nDEFAULT_GGUF=""\ndie() {{ exit 1; }}\n' + selection + '\nprintf "%s" "$DEFAULT_ID"\n'
+                script = f'set -eu\nBUNDLE="{bundle}"\nPI_OPS_HOME="{folder}"\nMODEL_DIR="{models}"\nDEFAULT_GGUF=""\ndie() {{ exit 1; }}\n' + selection + '\nprintf "%s" "$DEFAULT_ID"\n'
                 result = subprocess.run(["bash", "-c", script], capture_output=True)
                 self.assertEqual(result.returncode, expected)
                 if expected == 0:

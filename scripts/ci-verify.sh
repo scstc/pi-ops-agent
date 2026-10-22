@@ -64,7 +64,14 @@ dump_diagnostics() {
 RUN="$ARTIFACTS/$(basename "$(find "$ARTIFACTS" -maxdepth 1 -name '*.run' -print -quit)")"
 TAR="$(find "$ARTIFACTS" -maxdepth 1 -name '*.tar.gz' -print -quit)"
 (cd "$ARTIFACTS" && sha256sum -c *.sha256)
-python3 "$ROOT/scripts/verify-package.py" --model "$MODEL_ID" "$RUN"
+if [ -f "$ARTIFACTS/$MODEL_ID.gguf" ]; then
+  python3 "$ROOT/scripts/verify-package.py" --program "$RUN"
+  python3 "$ROOT/scripts/verify-package.py" --model "$MODEL_ID" "$ARTIFACTS/$MODEL_ID.gguf"
+  MODEL_ARGS=(--model "$ARTIFACTS/$MODEL_ID.gguf")
+else
+  python3 "$ROOT/scripts/verify-package.py" --model "$MODEL_ID" "$RUN"
+  MODEL_ARGS=()
+fi
 # 兼容旧产物；新产物只上传完整 .run，避免再上传一份相同 payload。
 if [ -n "$TAR" ]; then
   python3 "$ROOT/scripts/verify-package.py" --model "$MODEL_ID" "$TAR"
@@ -83,8 +90,9 @@ as_user() {
     PI_SMOKE_TIMEOUT=480 "$@"
 }
 as_user bash -c 'test "$(id -u)" != 0; ! command -v node; ! command -v llama-server'
-as_user bash "$RUN"
+as_user bash "$RUN" "${MODEL_ARGS[@]}" --model-dir "$VERIFY_HOME/weights"
 INSTALLED="$VERIFY_HOME/pi-ops-agent"
+test "$(cat "$INSTALLED/model-dir")" = "$VERIFY_HOME/weights"
 test -x "$INSTALLED/node/bin/node"
 test -f "$INSTALLED/node/lib/libstdc++.so.6"
 test -f "$INSTALLED/node/lib/libgcc_s.so.1"
@@ -114,6 +122,12 @@ OLD_PID="$(as_user bash -c 'cat "$PI_OPS_HOME/llama.pid"')"
 PORT="$(as_user env LD_LIBRARY_PATH="$INSTALLED/node/lib" "$INSTALLED/node/bin/node" -e 'const fs=require("fs"); console.log(new URL(JSON.parse(fs.readFileSync(process.argv[1])).providers["llama-cpp"].baseUrl).port)' "$VERIFY_HOME/.pi/agent/models.json")"
 as_user env CI_STOP_TIMEOUT=20 bash -c "$(declare -f ci_stop_llama); ci_stop_llama \"\$PI_OPS_HOME/llama.pid\" \"$PORT\"" 2>&1 | tee -a "$DIAGNOSTICS/lifecycle.log"
 as_user timeout 480 "$INSTALLED/bin/pi-ops" -p '只回复 OK' </dev/null
+# 分体程序升级无需再次提供模型，且保持当前模型与权重文件不变。
+MODEL_BEFORE="$(sha256sum "$VERIFY_HOME/weights/$MODEL_ID.gguf")"
+as_user bash "$RUN"
+test "$(sha256sum "$VERIFY_HOME/weights/$MODEL_ID.gguf")" = "$MODEL_BEFORE"
+test "$(cat "$INSTALLED/model-dir")" = "$VERIFY_HOME/weights"
+as_user env LD_LIBRARY_PATH="$INSTALLED/node/lib" "$INSTALLED/node/bin/node" -e 'const fs=require("fs"); if(JSON.parse(fs.readFileSync(process.argv[1])).defaultModel!==process.argv[2]) process.exit(1)' "$VERIFY_HOME/.pi/agent/settings.json" "$MODEL_ID"
 if [ "$MODEL_ID" = spark-x2.5-1.7b ]; then
   # Spark 必须实际完成一次工具调用，不能只验证纯文本聊天。
   as_user timeout 480 "$INSTALLED/bin/pi-ops" --mode json -p \
